@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/guyi-a/Interview-Agent/internal/config"
+	"github.com/guyi-a/Interview-Agent/internal/llmhttp"
 )
 
 // Classifier is the LLM-backed decider for auto mode. It runs on a
@@ -23,7 +24,7 @@ import (
 // to human review. False negatives (unnecessary prompt) are far cheaper than
 // false positives (silently running something the classifier couldn't judge).
 type Classifier struct {
-	client    *llmClient
+	client    *llmhttp.Client
 	model     string
 	maxTokens int
 }
@@ -40,7 +41,7 @@ func NewClassifier(cfg config.ApprovalFastConfig) *Classifier {
 		timeout = 15 * time.Second
 	}
 	return &Classifier{
-		client:    newLLMClient(cfg.APIKey, cfg.BaseURL, timeout),
+		client:    llmhttp.New(cfg.APIKey, cfg.BaseURL, timeout),
 		model:     cfg.Model,
 		maxTokens: cfg.MaxTokens,
 	}
@@ -67,7 +68,7 @@ type ClassifierVerdict struct {
 // model).
 func (c *Classifier) Classify(ctx context.Context, toolName, argsJSON, workspaceDir string) (ClassifierVerdict, error) {
 	if c == nil {
-		return ClassifierVerdict{Reason: "classifier_disabled"}, errNoAPIKey
+		return ClassifierVerdict{Reason: "classifier_disabled"}, llmhttp.ErrNoAPIKey
 	}
 	args := truncateArgs(argsJSON)
 	userPrompt := fmt.Sprintf(classifierUserTemplate,
@@ -75,18 +76,18 @@ func (c *Classifier) Classify(ctx context.Context, toolName, argsJSON, workspace
 		toolName,
 		args,
 	)
-	raw, err := c.client.chat(ctx, c.model, []chatMessage{
+	raw, err := c.client.Chat(ctx, c.model, []llmhttp.Message{
 		{Role: "system", Content: classifierSystemPrompt},
 		{Role: "user", Content: userPrompt},
 	}, c.maxTokens, /*jsonMode=*/ true)
 	if err != nil {
 		reason := "classifier_error"
 		switch {
-		case errors.Is(err, errNoAPIKey):
+		case errors.Is(err, llmhttp.ErrNoAPIKey):
 			reason = "classifier_no_key"
-		case errors.Is(err, errTimeout):
+		case errors.Is(err, llmhttp.ErrTimeout):
 			reason = "classifier_timeout"
-		case errors.Is(err, errBadResponse):
+		case errors.Is(err, llmhttp.ErrBadResponse):
 			reason = "classifier_bad_response"
 		}
 		return ClassifierVerdict{Reason: reason}, err
