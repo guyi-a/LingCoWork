@@ -20,6 +20,13 @@ export type ToolCall = {
   error?: string;
 };
 
+// One ReAct iteration: tools for that iteration + assistant text. Reasoning
+// is merged on ChatTurn across all iterations.
+export type ReactSegment = {
+  content: string;
+  tools: ToolCall[];
+};
+
 // One captured event from a sub-agent (e.g. deep_research) inside a single
 // assistant turn. The wire shape mirrors PersistedSubAgentEvent so live SSE
 // frames and history replay produce the same structure. parentToolCallId
@@ -44,6 +51,7 @@ export type ChatTurn = {
   reasoning: string;
   streamPhase?: "thinking" | "text" | "tool";
   tools: ToolCall[];
+  segments: ReactSegment[];
   subEvents: SubAgentEvent[];
   createdAt: string;
   done: boolean;
@@ -176,37 +184,111 @@ function normalizeToolStatus(
   return ok ? "ok" : "error";
 }
 
+function emptySegment(): ReactSegment {
+  return { content: "", tools: [] };
+}
+
+function mapPersistedTool(t: {
+  id: string;
+  name: string;
+  args_json?: string;
+  ok?: boolean;
+  status?: ToolCall["status"];
+  content?: string;
+  error?: string;
+}): ToolCall {
+  return {
+    id: t.id,
+    name: t.name,
+    argsJson: t.args_json ?? "",
+    status: normalizeToolStatus(t.status, t.ok, t.content, t.error, t.name),
+    content: t.content,
+    error: t.error,
+  };
+}
+
+/** Keep flat content/tools derived from segments for copy + legacy paths. */
+function withDerivedFlat(
+  t: ChatTurn,
+  segments: ReactSegment[],
+  patch?: Partial<ChatTurn>,
+): ChatTurn {
+  const content = segments
+    .map((s) => s.content)
+    .filter((c) => c.length > 0)
+    .join("\n\n");
+  const tools = segments.flatMap((s) => s.tools);
+  return { ...t, ...patch, segments, content, tools };
+}
+
+function ensureLiveSegments(t: ChatTurn): ReactSegment[] {
+  if (t.segments.length > 0) return t.segments.slice();
+  return [emptySegment()];
+}
+
 function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
   return rows
     .filter((r) => r.role === "user" || r.role === "assistant")
-    .map((r) => ({
-      id: `db-${r.seq}`,
-      role: r.role as "user" | "assistant",
-      content: r.content,
-      reasoning: r.reasoning_content ?? "",
-      tools: (r.tools ?? []).map((t) => ({
-        id: t.id,
-        name: t.name,
-        argsJson: t.args_json ?? "",
-        status: normalizeToolStatus(t.status, t.ok, t.content, t.error, t.name),
-        content: t.content,
-        error: t.error,
-      })),
-      subEvents: (r.sub_events ?? []).map((e) => ({
-        seq: e.seq,
-        agent: e.agent,
-        parentToolCallId: e.parent_tool_call_id,
-        type: e.type,
-        content: e.content,
-        toolCallId: e.tool_call_id,
-        name: e.name,
-        argsJson: e.args_json,
-        ok: e.ok,
-        error: e.error,
-      })),
-      createdAt: r.created_at,
-      done: true,
-    }));
+    .map((r) => {
+      const flatTools = (r.tools ?? []).map(mapPersistedTool);
+      let segments: ReactSegment[];
+      if (r.segments && r.segments.length > 0) {
+        segments = r.segments.map((s) => ({
+          content: s.content ?? "",
+          tools: (s.tools ?? []).map(mapPersistedTool),
+        }));
+      } else if (r.role === "assistant") {
+        // Legacy API without segments → one segment from flat fields.
+        segments = [{ content: r.content, tools: flatTools }];
+      } else {
+        segments = [];
+      }
+      const derived =
+        r.role === "assistant"
+          ? withDerivedFlat(
+              {
+                id: `db-${r.seq}`,
+                role: "assistant",
+                content: "",
+                reasoning: r.reasoning_content ?? "",
+                tools: [],
+                segments: [],
+                subEvents: [],
+                createdAt: r.created_at,
+                done: true,
+              },
+              segments,
+            )
+          : null;
+      if (derived) {
+        return {
+          ...derived,
+          subEvents: (r.sub_events ?? []).map((e) => ({
+            seq: e.seq,
+            agent: e.agent,
+            parentToolCallId: e.parent_tool_call_id,
+            type: e.type,
+            content: e.content,
+            toolCallId: e.tool_call_id,
+            name: e.name,
+            argsJson: e.args_json,
+            ok: e.ok,
+            error: e.error,
+          })),
+        };
+      }
+      return {
+        id: `db-${r.seq}`,
+        role: "user" as const,
+        content: r.content,
+        reasoning: "",
+        tools: [],
+        segments: [],
+        subEvents: [],
+        createdAt: r.created_at,
+        done: true,
+      };
+    });
 }
 
 export type ProjectBoundEvent = {
@@ -304,11 +386,18 @@ async function runSSELoop(
       switch (f.type) {
         case "text":
           if (f.content)
-            updateAssistant((t) => ({
-              ...t,
-              streamPhase: "text",
-              content: t.content + f.content,
-            }));
+            updateAssistant((t) => {
+              const segs = ensureLiveSegments(t);
+              // After tools landed on the current segment, a new text chunk
+              // starts the next ReAct iteration.
+              if (segs[segs.length - 1].tools.length > 0) {
+                segs.push(emptySegment());
+              }
+              const last = { ...segs[segs.length - 1] };
+              last.content = last.content + f.content!;
+              segs[segs.length - 1] = last;
+              return withDerivedFlat(t, segs, { streamPhase: "text" });
+            });
           break;
         case "thinking":
           if (f.content)
@@ -444,9 +533,28 @@ export function useChatStream(
 
       const upsertTool = (id: string, patch: Partial<ToolCall>) => {
         updateAssistant((t) => {
-          const idx = t.tools.findIndex((tc) => tc.id === id);
-          if (idx < 0) {
-            const next: ToolCall = {
+          const segs = ensureLiveSegments(t);
+          // Prefer updating an existing tool anywhere; otherwise append to
+          // the current (last) segment.
+          let segIdx = -1;
+          let toolIdx = -1;
+          for (let si = 0; si < segs.length; si++) {
+            const ti = segs[si].tools.findIndex((tc) => tc.id === id);
+            if (ti >= 0) {
+              segIdx = si;
+              toolIdx = ti;
+              break;
+            }
+          }
+          const clean: Partial<ToolCall> = {};
+          (Object.keys(patch) as (keyof ToolCall)[]).forEach((k) => {
+            const v = patch[k];
+            if (v === "") return;
+            (clean as Record<string, unknown>)[k] = v;
+          });
+
+          if (segIdx < 0) {
+            const nextTool: ToolCall = {
               id,
               name: patch.name ?? "",
               argsJson: patch.argsJson ?? "",
@@ -454,22 +562,18 @@ export function useChatStream(
               content: patch.content,
               error: patch.error,
             };
-            return { ...t, tools: [...t.tools, next] };
+            const last = { ...segs[segs.length - 1] };
+            last.tools = [...last.tools, nextTool];
+            segs[segs.length - 1] = last;
+            return withDerivedFlat(t, segs);
           }
-          // Drop empty-string fields from the patch so a later tool_result
-          // frame (which may not carry a name) cannot wipe out the tool_call
-          // frame's name. Explicit undefined still passes through — that's
-          // how callers intentionally clear stale content/error.
-          const clean: Partial<ToolCall> = {};
-          (Object.keys(patch) as (keyof ToolCall)[]).forEach((k) => {
-            const v = patch[k];
-            if (v === "") return;
-            (clean as Record<string, unknown>)[k] = v;
-          });
-          const merged = { ...t.tools[idx], ...clean };
-          const tools = t.tools.slice();
-          tools[idx] = merged;
-          return { ...t, tools };
+
+          const seg = { ...segs[segIdx] };
+          const tools = seg.tools.slice();
+          tools[toolIdx] = { ...tools[toolIdx], ...clean };
+          seg.tools = tools;
+          segs[segIdx] = seg;
+          return withDerivedFlat(t, segs);
         });
       };
 
@@ -524,11 +628,18 @@ export function useChatStream(
               // 对不上；upsertTool 会造出幽灵 "(unnamed) PENDING" 卡。
               // 底部 dock 仍然按 interrupt_id 显示，不受影响。
               updateAssistant((t) => {
-                const idx = t.tools.findIndex((tc) => tc.id === f.id);
-                if (idx < 0) return t;
-                const tools = t.tools.slice();
-                tools[idx] = { ...tools[idx], status: "pending" };
-                return { ...t, tools };
+                const segs = ensureLiveSegments(t);
+                let changed = false;
+                const nextSegs = segs.map((seg) => {
+                  const idx = seg.tools.findIndex((tc) => tc.id === f.id);
+                  if (idx < 0) return seg;
+                  changed = true;
+                  const tools = seg.tools.slice();
+                  tools[idx] = { ...tools[idx], status: "pending" };
+                  return { ...seg, tools };
+                });
+                if (!changed) return t;
+                return withDerivedFlat(t, nextSegs);
               });
             }
             if (f.type === "question_required") {
@@ -657,6 +768,7 @@ export function useChatStream(
           content: "",
           reasoning: "",
           tools: [],
+          segments: [{ content: "", tools: [] }],
           subEvents: [],
           createdAt: nowIso,
           done: false,
@@ -689,6 +801,7 @@ export function useChatStream(
         content: trimmed,
         reasoning: "",
         tools: [],
+        segments: [],
         subEvents: [],
         createdAt: nowIso,
         done: true,
@@ -699,6 +812,7 @@ export function useChatStream(
         content: "",
         reasoning: "",
         tools: [],
+        segments: [{ content: "", tools: [] }],
         subEvents: [],
         createdAt: nowIso,
         done: false,
@@ -833,6 +947,7 @@ export function useChatStream(
         content: "",
         reasoning: "",
         tools: [],
+        segments: [{ content: "", tools: [] }],
         subEvents: [],
         createdAt: nowIso,
         done: false,

@@ -25,6 +25,14 @@ export type PersistedToolEvent = {
   error?: string;
 };
 
+// One ReAct iteration inside an assistant turn: tools invoked in that
+// iteration plus the assistant text for that iteration. Reasoning stays
+// merged on the parent message.
+export type PersistedSegment = {
+  content?: string;
+  tools?: PersistedToolEvent[];
+};
+
 // One event captured from a sub-agent (e.g. deep_research) during a single
 // assistant turn. Persisted as an ordered array so the UI can replay the
 // nested timeline after the page reloads. parent_tool_call_id links each
@@ -48,6 +56,7 @@ export type PersistedMessage = {
   content: string;
   reasoning_content?: string;
   tools?: PersistedToolEvent[];
+  segments?: PersistedSegment[];
   sub_events?: PersistedSubAgentEvent[];
   created_at: string;
 };

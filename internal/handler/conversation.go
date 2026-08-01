@@ -83,12 +83,21 @@ type subAgentEventItem struct {
 	Error            string `json:"error,omitempty"`
 }
 
+// segmentItem is one ReAct iteration inside an assistant turn: the
+// assistant's visible text for that iteration plus the tools it invoked.
+// Thought/reasoning stays on the parent messageItem (merged across segments).
+type segmentItem struct {
+	Content string          `json:"content,omitempty"`
+	Tools   []toolEventItem `json:"tools,omitempty"`
+}
+
 type messageItem struct {
 	Seq              int                 `json:"seq"`
 	Role             string              `json:"role"`
 	Content          string              `json:"content"`
 	ReasoningContent string              `json:"reasoning_content,omitempty"`
 	Tools            []toolEventItem     `json:"tools,omitempty"`
+	Segments         []segmentItem       `json:"segments,omitempty"`
 	SubEvents        []subAgentEventItem `json:"sub_events,omitempty"`
 	CreatedAt        string              `json:"created_at"`
 }
@@ -168,29 +177,21 @@ func fromModelMessage(m model.Message) messageItem {
 	return item
 }
 
-// foldMessages transforms raw per-message DB rows into the flat per-turn
-// wire format the frontend expects (one assistant entry per user turn,
-// with tools[] + sub_events[] nested inside).
+// foldMessages transforms raw per-message DB rows into one assistant entry
+// per user turn. Each ReAct iteration becomes a segment (content + tools);
+// reasoning is merged across segments. Flat content/tools are derived from
+// segments so older clients keep working.
 //
-// Two folds happen in parallel:
+//  1. assistant + subsequent tool rows: ToolCalls seed segment tool
+//     placeholders; Role=tool rows fill ok/content/error by ToolCallID on
+//     the latest segment.
 //
-//  1. assistant + subsequent tool rows: an assistant with ToolCalls seeds
-//     Tools[] placeholders (id/name/args), then following Role=tool rows fill
-//     each placeholder's ok/content/error by matching ToolCallID.
+//  2. Multiple assistant rows in the same user turn append segments (not
+//     one giant tools[] blob) so the UI can interleave tools and text.
 //
-//  2. Multiple assistant rows in the same turn (a ReAct loop emits one
-//     assistant per iteration — first "I'll call X", then after tool result
-//     "here's the answer" — that's ≥ 2 rows) are merged into a SINGLE UI
-//     entry. The frontend renders one Interviewer block per turn; splitting
-//     them would show the same timestamp twice with the tool card floating
-//     between two halves of the reply.
+// The merge chain resets on any user / system row.
 //
-// The merge chain resets on any user / system row so a new user turn always
-// starts a fresh assistant entry.
-//
-// Legacy rows (assistant with no ToolCalls, tools embedded in Extra) still
-// flow through fromModelMessage unchanged; the merge logic treats them the
-// same way — a single legacy assistant row is just a chain of length 1.
+// Legacy rows (no ToolCalls, tools in Extra) become a single segment.
 func foldMessages(msgs []model.Message) []messageItem {
 	out := make([]messageItem, 0, len(msgs))
 	lastAssistantIdx := -1
@@ -199,9 +200,6 @@ func foldMessages(msgs []model.Message) []messageItem {
 		switch m.Role {
 		case "tool":
 			if lastAssistantIdx < 0 {
-				// Orphan tool row (no preceding assistant to fold into) —
-				// shouldn't happen with well-formed data. Skip rather than
-				// emit a bare tool card the UI wasn't designed for.
 				continue
 			}
 			ok := true
@@ -218,10 +216,22 @@ func foldMessages(msgs []model.Message) []messageItem {
 					errMsg = p.Error
 				}
 			}
+			prev := &out[lastAssistantIdx]
+			if len(prev.Segments) == 0 {
+				prev.Segments = []segmentItem{{}}
+			}
+			// Match across ALL segments — after HITL resume the tool_result
+			// often lands after an empty phantom assistant segment; filling
+			// only the last segment left the original PENDING card orphaned
+			// and appended a second DONE card for the same id.
 			merged := false
-			for i := range out[lastAssistantIdx].Tools {
-				t := &out[lastAssistantIdx].Tools[i]
-				if t.ID == m.ToolCallID {
+			for si := range prev.Segments {
+				seg := &prev.Segments[si]
+				for i := range seg.Tools {
+					t := &seg.Tools[i]
+					if t.ID != m.ToolCallID {
+						continue
+					}
 					t.OK = boolPtr(ok)
 					if ok {
 						t.Status = "ok"
@@ -236,13 +246,13 @@ func foldMessages(msgs []model.Message) []messageItem {
 					merged = true
 					break
 				}
+				if merged {
+					break
+				}
 			}
 			if !merged {
-				// tool row with no matching placeholder in the last
-				// assistant's Tools[] (rare: assistant.ToolCalls missing this
-				// id, or orphan tool row from data drift). Append as a
-				// standalone tool entry so nothing is silently dropped.
-				out[lastAssistantIdx].Tools = append(out[lastAssistantIdx].Tools, toolEventItem{
+				last := &prev.Segments[len(prev.Segments)-1]
+				last.Tools = append(last.Tools, toolEventItem{
 					ID:      m.ToolCallID,
 					Name:    m.ToolName,
 					OK:      boolPtr(ok),
@@ -251,13 +261,9 @@ func foldMessages(msgs []model.Message) []messageItem {
 					Error:   errMsg,
 				})
 			}
+			rebuildFlatFromSegments(prev)
 		case "assistant":
 			item := fromModelMessage(m)
-			// If this row has structured ToolCalls (new format), rebuild
-			// item.Tools as placeholders from ToolCalls — subsequent tool
-			// rows will fill their ok/content/error. Skip this block for
-			// legacy rows (no ToolCalls) so item.Tools keeps whatever
-			// fromModelMessage hydrated from Extra.tools.
 			if m.ToolCalls != "" {
 				var recs []stream.ToolCallRecord
 				if err := json.Unmarshal([]byte(m.ToolCalls), &recs); err == nil && len(recs) > 0 {
@@ -268,58 +274,101 @@ func foldMessages(msgs []model.Message) []messageItem {
 							Name:     rec.Name,
 							ArgsJSON: rec.ArgsJSON,
 							Status:   "pending",
-							// OK/Content/Error left empty — filled when the
-							// matching tool rows fold in below. Until then this
-							// represents an approval-pending tool call.
 						})
 					}
 					item.Tools = placeholders
 				}
 			}
 
-			// Merge with the previous assistant entry if this belongs to the
-			// same user turn (no user/system row broke the chain since).
+			// Skip empty phantom assistants (HITL resume used to persist
+			// these between tool_calls and tool results). Appending them as
+			// segments causes tool_results to miss the PENDING placeholder
+			// and render a duplicate DONE card.
+			if item.Content == "" && item.ReasoningContent == "" &&
+				len(item.Tools) == 0 && m.ToolCalls == "" {
+				if lastAssistantIdx >= 0 {
+					prev := &out[lastAssistantIdx]
+					prev.SubEvents = append(prev.SubEvents, item.SubEvents...)
+					prev.Seq = item.Seq
+					prev.CreatedAt = item.CreatedAt
+				}
+				continue
+			}
+
+			seg := segmentItem{Content: item.Content, Tools: item.Tools}
+
 			if lastAssistantIdx >= 0 {
 				prev := &out[lastAssistantIdx]
-				prev.Content = joinAssistantContent(prev.Content, item.Content)
 				prev.ReasoningContent = joinAssistantContent(prev.ReasoningContent, item.ReasoningContent)
-				// Append Tools with id-based dedupe: the last assistant row
-				// of a new-format turn carries the legacy Extra.tools list
-				// (dual-write) which repeats every tool_call already seeded
-				// by earlier ToolCalls-driven placeholders. Merging blindly
-				// would render every tool card twice.
-				seen := make(map[string]struct{}, len(prev.Tools))
-				for _, t := range prev.Tools {
-					if t.ID != "" {
-						seen[t.ID] = struct{}{}
-					}
-				}
-				for _, t := range item.Tools {
+				// Dedupe tools already present in earlier segments (legacy
+				// Extra.tools dual-write on the last assistant row).
+				seen := segmentToolIDs(prev.Segments)
+				filtered := make([]toolEventItem, 0, len(seg.Tools))
+				for _, t := range seg.Tools {
 					if t.ID != "" {
 						if _, dup := seen[t.ID]; dup {
 							continue
 						}
 						seen[t.ID] = struct{}{}
 					}
-					prev.Tools = append(prev.Tools, t)
+					filtered = append(filtered, t)
 				}
+				seg.Tools = filtered
+				prev.Segments = append(prev.Segments, seg)
 				prev.SubEvents = append(prev.SubEvents, item.SubEvents...)
-				// Use the latest row's seq/timestamp so the turn shows the
-				// completion moment (matches the pre-fix single-row behaviour).
 				prev.Seq = item.Seq
 				prev.CreatedAt = item.CreatedAt
+				rebuildFlatFromSegments(prev)
 				continue
 			}
 
+			item.Segments = []segmentItem{seg}
+			rebuildFlatFromSegments(&item)
 			out = append(out, item)
 			lastAssistantIdx = len(out) - 1
 		default:
-			// user / system — resets the assistant merge chain.
 			out = append(out, fromModelMessage(m))
 			lastAssistantIdx = -1
 		}
 	}
 	return out
+}
+
+func segmentToolIDs(segs []segmentItem) map[string]struct{} {
+	seen := make(map[string]struct{})
+	for _, seg := range segs {
+		for _, t := range seg.Tools {
+			if t.ID != "" {
+				seen[t.ID] = struct{}{}
+			}
+		}
+	}
+	return seen
+}
+
+// rebuildFlatFromSegments keeps Content/Tools in sync with Segments for
+// copy buttons and any client that ignores segments.
+func rebuildFlatFromSegments(item *messageItem) {
+	if item == nil {
+		return
+	}
+	var content string
+	tools := make([]toolEventItem, 0)
+	seen := make(map[string]struct{})
+	for _, seg := range item.Segments {
+		content = joinAssistantContent(content, seg.Content)
+		for _, t := range seg.Tools {
+			if t.ID != "" {
+				if _, dup := seen[t.ID]; dup {
+					continue
+				}
+				seen[t.ID] = struct{}{}
+			}
+			tools = append(tools, t)
+		}
+	}
+	item.Content = content
+	item.Tools = tools
 }
 
 // joinAssistantContent concatenates two chunks of the same assistant turn's

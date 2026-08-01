@@ -417,7 +417,14 @@ func (s *ChatService) persistRun(convID string, collector *stream.RunCollector, 
 	legacyTools := collector.Tools()
 
 	rows := make([]*model.Message, 0, 2*len(turns))
-	lastAssistantIdx := len(turns) - 1
+	// Extra dual-write lands on the last turn that actually emits an
+	// assistant row (skip empty placeholder turns synthesized on resume).
+	lastAssistantEmit := -1
+	for i, t := range turns {
+		if t.Assistant.Content != "" || t.Assistant.ReasoningContent != "" || len(t.Assistant.ToolCalls) > 0 {
+			lastAssistantEmit = i
+		}
+	}
 
 	for i, t := range turns {
 		padded := t
@@ -425,41 +432,48 @@ func (s *ChatService) persistRun(convID string, collector *stream.RunCollector, 
 			padded = padMissingToolResults(t)
 		}
 
-		assistantRow := &model.Message{
-			ConversationID:   convID,
-			Role:             string(schema.Assistant),
-			Content:          padded.Assistant.Content,
-			ReasoningContent: padded.Assistant.ReasoningContent,
-		}
-		if len(padded.Assistant.ToolCalls) > 0 {
-			if b, err := json.Marshal(padded.Assistant.ToolCalls); err == nil {
-				assistantRow.ToolCalls = string(b)
-			} else {
-				log.Printf("marshal ToolCalls (convID=%s): %v", convID, err)
+		hasAssistant := padded.Assistant.Content != "" ||
+			padded.Assistant.ReasoningContent != "" ||
+			len(padded.Assistant.ToolCalls) > 0
+
+		// Resume after HITL often delivers tool_result before any new
+		// OpenTurn. AttachToolResult then synthesizes an empty TurnRecord
+		// so the result isn't dropped. Emitting that empty assistant into
+		// the DB would sit BETWEEN a prior run's tool_calls and this run's
+		// tool row, which DeepSeek/OpenAI reject (400: tool_calls must be
+		// followed by tool messages). Persist tool rows only in that case.
+		if hasAssistant {
+			assistantRow := &model.Message{
+				ConversationID:   convID,
+				Role:             string(schema.Assistant),
+				Content:          padded.Assistant.Content,
+				ReasoningContent: padded.Assistant.ReasoningContent,
 			}
-		}
-		// Dual-write: legacy Extra (tools + sub_events) only on the last
-		// assistant row of the run. This preserves the pre-fix wire format
-		// the frontend currently reads via handler.fromModelMessage; the new
-		// fold-based path (step 3f) reads ToolCalls + tool rows and ignores
-		// this blob for new data.
-		if i == lastAssistantIdx {
-			payload := map[string]any{}
-			if len(legacyTools) > 0 {
-				payload["tools"] = legacyTools
-			}
-			if len(subEvents) > 0 {
-				payload["sub_events"] = subEvents
-			}
-			if len(payload) > 0 {
-				if data, jerr := json.Marshal(payload); jerr == nil {
-					assistantRow.Extra = string(data)
+			if len(padded.Assistant.ToolCalls) > 0 {
+				if b, err := json.Marshal(padded.Assistant.ToolCalls); err == nil {
+					assistantRow.ToolCalls = string(b)
 				} else {
-					log.Printf("marshal extra (convID=%s): %v", convID, jerr)
+					log.Printf("marshal ToolCalls (convID=%s): %v", convID, err)
 				}
 			}
+			if i == lastAssistantEmit {
+				payload := map[string]any{}
+				if len(legacyTools) > 0 {
+					payload["tools"] = legacyTools
+				}
+				if len(subEvents) > 0 {
+					payload["sub_events"] = subEvents
+				}
+				if len(payload) > 0 {
+					if data, jerr := json.Marshal(payload); jerr == nil {
+						assistantRow.Extra = string(data)
+					} else {
+						log.Printf("marshal extra (convID=%s): %v", convID, jerr)
+					}
+				}
+			}
+			rows = append(rows, assistantRow)
 		}
-		rows = append(rows, assistantRow)
 
 		for _, tr := range padded.ToolResults {
 			// tool row Content is what the LLM sees on next replay — it must
@@ -612,6 +626,14 @@ func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled boo
 					m.ToolCalls = tcs
 				}
 			}
+		}
+		// Skip empty phantom assistants (resume HITL used to persist these
+		// between an open tool_calls row and its tool result). Emitting them
+		// breaks OpenAI/DeepSeek pairing: tool_calls must be followed by tool.
+		if r.Role == string(schema.Assistant) &&
+			m.Content == "" && m.ReasoningContent == "" &&
+			len(m.ToolCalls) == 0 && m.ToolCallID == "" {
+			continue
 		}
 		out = append(out, m)
 	}

@@ -241,39 +241,65 @@ export function TranscriptEntry({
       {turn.reasoning && (
         <ThinkingCard
           content={turn.reasoning}
-          label={streaming && !turn.content ? "Thinking" : "Thoughts"}
-          streaming={streaming && !turn.content}
+          label={
+            streaming && !turn.content && turn.tools.length === 0
+              ? "Thinking"
+              : "Thoughts"
+          }
+          streaming={streaming && !turn.content && turn.tools.length === 0}
         />
       )}
 
-      {turn.tools.length > 0 && (
-        <div className="my-4 space-y-3">
-          {groupConsecutiveTools(turn.tools).map((row) => {
-            if (row.kind === "group") {
-              return (
-                <ToolGroup
-                  key={`grp-${row.tools[0].id || row.index}`}
-                  tools={row.tools}
-                />
-              );
-            }
-            const tc = row.tool;
+      {turn.role === "assistant"
+        ? (turn.segments.length > 0
+            ? turn.segments
+            : [{ content: turn.content, tools: turn.tools }]
+          ).map((seg, segIdx, segs) => {
+            const isLastSeg = segIdx === segs.length - 1;
             return (
-              <ToolEntry
-                key={tc.id}
-                tool={tc}
-                // Look up children in the conversation-wide pool: a
-                // sub-agent's tool_result can land in a later turn's
-                // subEvents (post-resume) but still belongs under this
-                // tool_call.
-                subEvents={allSubEvents.filter(
-                  (e) => e.parentToolCallId === tc.id,
+              <div key={`seg-${segIdx}`}>
+                {seg.tools.length > 0 && (
+                  <div className="my-4 space-y-3">
+                    {groupConsecutiveTools(seg.tools).map((row) => {
+                      if (row.kind === "group") {
+                        return (
+                          <ToolGroup
+                            key={`grp-${row.tools[0].id || row.index}`}
+                            tools={row.tools}
+                          />
+                        );
+                      }
+                      const tc = row.tool;
+                      return (
+                        <ToolEntry
+                          key={tc.id}
+                          tool={tc}
+                          subEvents={allSubEvents.filter(
+                            (e) => e.parentToolCallId === tc.id,
+                          )}
+                        />
+                      );
+                    })}
+                  </div>
                 )}
-              />
+                {seg.content ? (
+                  <div className="text-ink">
+                    <MessageBody
+                      content={seg.content}
+                      streaming={streaming && isLastSeg}
+                    />
+                  </div>
+                ) : (
+                  streaming &&
+                  isLastSeg &&
+                  seg.tools.length === 0 && (
+                    <span className="text-muted">…</span>
+                  )
+                )}
+              </div>
             );
-          })}
-        </div>
-      )}
+          })
+        : null}
 
       {(() => {
         // Orphan = a subEvent captured in THIS turn's Extra whose parent
@@ -290,38 +316,25 @@ export function TranscriptEntry({
         ) : null;
       })()}
 
-      <div
-        className={cn(
-          "text-ink",
-          isUser && "rounded-2xl bg-subtle px-4 py-3",
-        )}
-      >
-        {(() => {
-          if (!isUser) {
-            return turn.content ? (
-              <MessageBody content={turn.content} streaming={streaming} />
-            ) : (
-              streaming && <span className="text-muted">…</span>
+      {isUser ? (
+        <div className="text-ink rounded-2xl bg-subtle px-4 py-3">
+          {(() => {
+            const { attachments, text } = parseAttachmentMarkers(turn.content);
+            return (
+              <>
+                {attachments.length > 0 && (
+                  <UserAttachmentChips attachments={attachments} />
+                )}
+                {text ? (
+                  <MessageBody content={text} streaming={streaming} />
+                ) : attachments.length === 0 && streaming ? (
+                  <span className="text-muted">…</span>
+                ) : null}
+              </>
             );
-          }
-          // User bubble: strip leading [file:]/[folder:] markers and render
-          // them as chips above the prose so the sent message mirrors what
-          // the composer showed just before send.
-          const { attachments, text } = parseAttachmentMarkers(turn.content);
-          return (
-            <>
-              {attachments.length > 0 && (
-                <UserAttachmentChips attachments={attachments} />
-              )}
-              {text ? (
-                <MessageBody content={text} streaming={streaming} />
-              ) : attachments.length === 0 && streaming ? (
-                <span className="text-muted">…</span>
-              ) : null}
-            </>
-          );
-        })()}
-      </div>
+          })()}
+        </div>
+      ) : null}
 
       {turn.error && (
         <p className="mt-2 text-sm text-red-700">⚠ {turn.error}</p>
