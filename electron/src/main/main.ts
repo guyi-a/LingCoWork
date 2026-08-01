@@ -194,10 +194,12 @@ function createWindow(): void {
   }
 }
 
+// Opt-in only. DevTools stay available via the menu / keyboard shortcut
+// (webPreferences.devTools is on); this just controls whether the panel is
+// already open when the window appears.
 function shouldOpenDevTools(): boolean {
   const raw = (process.env.INTERVIEW_ELECTRON_DEVTOOLS ?? '').trim().toLowerCase();
-  if (raw === '') return true;
-  return !['0', 'false', 'off', 'no'].includes(raw);
+  return ['1', 'true', 'on', 'yes'].includes(raw);
 }
 
 app.whenReady().then(() => {

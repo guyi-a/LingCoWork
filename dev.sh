@@ -205,7 +205,7 @@ if [ "$WITH_ELECTRON" = "1" ]; then
     tail -20 "${LOG_DIR}/electron.log" | sed 's/^/    /'
     cleanup
   fi
-  echo "  🪟 electron  : 已启动 (INTERVIEW_ELECTRON_DEVTOOLS=0 可关闭 DevTools)"
+  echo "  🪟 electron  : 已启动 (INTERVIEW_ELECTRON_DEVTOOLS=1 可自动打开 DevTools)"
 fi
 
 echo ""
