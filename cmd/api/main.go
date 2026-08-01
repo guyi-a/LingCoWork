@@ -20,6 +20,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
 	"github.com/guyi-a/Interview-Agent/internal/agent/tools"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
+	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/config"
 	"github.com/guyi-a/Interview-Agent/internal/handler"
 	ragembedding "github.com/guyi-a/Interview-Agent/internal/rag/embedding"
@@ -79,6 +80,21 @@ func main() {
 	projectRepo := repository.NewProjectRepo(db)
 	checkpointRepo := repository.NewCheckpointRepo(db)
 	pendingApprovalRepo := repository.NewPendingApprovalRepo(db)
+	compactionRepo := repository.NewCompactionRepo(db)
+	compactor := compaction.New(compactionRepo, cfg.Compaction)
+	// Zero means "no fold coming", which the UI reads as: show the raw token
+	// count with no denominator instead of a progress readout toward a
+	// threshold that will never fire.
+	contextLimit := 0
+	if compactor != nil {
+		contextLimit = compaction.ThresholdTokens(cfg.Compaction)
+	}
+	if compactor == nil {
+		log.Printf("context compaction disabled (missing DEEPSEEK_API_KEY or COMPACTION_ENABLED=false); long conversations send full history")
+	} else {
+		log.Printf("context compaction enabled: model=%s threshold=%d tokens keep_last_turns=%d",
+			cfg.Compaction.Model, compaction.ThresholdTokens(cfg.Compaction), cfg.Compaction.KeepLastUserTurns)
+	}
 	approvalModes := approval.NewModeStore()
 	classifier := approval.NewClassifier(cfg.ApprovalFast)
 	if classifier == nil {
@@ -141,14 +157,14 @@ func main() {
 		pendingApprovals.Restore(rows)
 		log.Printf("restored %d pending approval(s) from DB", len(rows))
 	}
-	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, pendingApprovals, approvalModes, cfg.LLM.Multimodal)
-	convService := service.NewConversationService(convRepo, msgRepo, manager, browserMgr)
+	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, pendingApprovals, approvalModes, cfg.LLM.Multimodal, compactor)
+	convService := service.NewConversationService(convRepo, msgRepo, compactionRepo, manager, browserMgr)
 	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr, absWorkspaceRoot)
 	workspaceService := service.NewWorkspaceService(convRepo, projectRepo)
 
 	chatHandler := handler.NewChatHandler(chatService)
 	approvalHandler := handler.NewApprovalHandler(chatService)
-	convHandler := handler.NewConversationHandler(convService)
+	convHandler := handler.NewConversationHandler(convService, contextLimit)
 	projectHandler := handler.NewProjectHandler(projectService)
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
 

@@ -50,15 +50,24 @@ export type PersistedSubAgentEvent = {
   error?: string;
 };
 
+// role "context_compacted" is a synthetic marker, not a stored row: history
+// up to this point was folded into a summary to fit the context window. The
+// summary text is deliberately not sent — it is context for the model, not
+// something the user asked to read.
 export type PersistedMessage = {
   seq: number;
-  role: "user" | "assistant" | "tool" | "system";
+  role: "user" | "assistant" | "tool" | "system" | "context_compacted";
   content: string;
   reasoning_content?: string;
   tools?: PersistedToolEvent[];
   segments?: PersistedSegment[];
   sub_events?: PersistedSubAgentEvent[];
   created_at: string;
+  // Provider-reported context size this turn ran against. Present only on
+  // assistant rows, and only once a run has reported usage.
+  total_tokens?: number;
+  compaction_id?: number;
+  replaced_count?: number;
 };
 
 export async function listConversations(): Promise<ConversationItem[]> {
@@ -107,13 +116,26 @@ export async function openProjectInFinder(id: string): Promise<void> {
   }
 }
 
-export async function listMessages(id: string): Promise<PersistedMessage[]> {
+export type MessageHistory = {
+  messages: PersistedMessage[];
+  // Token count at which history gets folded into a summary. 0 when
+  // compaction is disabled — no threshold to show progress against.
+  contextLimit: number;
+};
+
+export async function listMessages(id: string): Promise<MessageHistory> {
   const res = await fetch(
     `${API_BASE}/conversations/${encodeURIComponent(id)}/messages`,
   );
   if (!res.ok) throw new Error(`listMessages: ${res.status}`);
-  const data = (await res.json()) as { messages: PersistedMessage[] };
-  return data.messages ?? [];
+  const data = (await res.json()) as {
+    messages: PersistedMessage[];
+    context_limit?: number;
+  };
+  return {
+    messages: data.messages ?? [],
+    contextLimit: data.context_limit ?? 0,
+  };
 }
 
 export async function deleteConversation(id: string): Promise<void> {

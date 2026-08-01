@@ -10,19 +10,27 @@ import (
 )
 
 type ConversationService struct {
-	convRepo   *repository.ConversationRepo
-	msgRepo    *repository.MessageRepo
-	manager    *stream.Manager
-	browserMgr *browseruse.Manager
+	convRepo       *repository.ConversationRepo
+	msgRepo        *repository.MessageRepo
+	compactionRepo *repository.CompactionRepo
+	manager        *stream.Manager
+	browserMgr     *browseruse.Manager
 }
 
 func NewConversationService(
 	convRepo *repository.ConversationRepo,
 	msgRepo *repository.MessageRepo,
+	compactionRepo *repository.CompactionRepo,
 	manager *stream.Manager,
 	browserMgr *browseruse.Manager,
 ) *ConversationService {
-	return &ConversationService{convRepo: convRepo, msgRepo: msgRepo, manager: manager, browserMgr: browserMgr}
+	return &ConversationService{
+		convRepo:       convRepo,
+		msgRepo:        msgRepo,
+		compactionRepo: compactionRepo,
+		manager:        manager,
+		browserMgr:     browserMgr,
+	}
 }
 
 func (s *ConversationService) List(ctx context.Context, limit int) ([]model.Conversation, error) {
@@ -31,6 +39,20 @@ func (s *ConversationService) List(ctx context.Context, limit int) ([]model.Conv
 
 func (s *ConversationService) Messages(ctx context.Context, id string) ([]model.Message, error) {
 	return s.msgRepo.List(ctx, id)
+}
+
+// ActiveCompaction returns the fold point the UI should mark, or nil when
+// the conversation has never been compacted. A read failure degrades to nil:
+// losing the marker is cosmetic, failing the whole history load is not.
+func (s *ConversationService) ActiveCompaction(ctx context.Context, id string) *model.Compaction {
+	if s.compactionRepo == nil {
+		return nil
+	}
+	c, err := s.compactionRepo.Latest(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return c
 }
 
 func (s *ConversationService) Delete(ctx context.Context, id string) error {

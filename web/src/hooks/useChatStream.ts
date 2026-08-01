@@ -5,6 +5,7 @@ import {
   listMessages,
   postChat,
   resumeChat,
+  type MessageHistory,
   type PersistedMessage,
 } from "@/lib/api";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -44,9 +45,12 @@ export type SubAgentEvent = {
   error?: string;
 };
 
+// role "context_compacted" is a divider, not a message: everything above it
+// was folded into a summary before the next turn ran. It carries no content
+// — the summary goes to the model, not to the screen.
 export type ChatTurn = {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "context_compacted";
   content: string;
   reasoning: string;
   streamPhase?: "thinking" | "text" | "tool";
@@ -56,6 +60,13 @@ export type ChatTurn = {
   createdAt: string;
   done: boolean;
   error?: string;
+  replacedCount?: number;
+  // Context size this turn ran against, as the provider counted it. Same
+  // number the compaction estimator uses, so the readout never disagrees
+  // with the thing that decides when to fold.
+  totalTokens?: number;
+  // Wall-clock time from the user hitting send to the run finishing.
+  durationMs?: number;
 };
 
 type Frame = {
@@ -68,6 +79,7 @@ type Frame = {
     | "usage"
     | "approval_required"
     | "question_required"
+    | "context_compacted"
     | "done"
     | "error";
   // Routing
@@ -91,6 +103,14 @@ type Frame = {
   checkpoint_id?: string;
   interrupt_id?: string;
   questions_json?: string;
+  // usage — one frame per model call, so `total` is the context that call
+  // saw, not a running sum. The last one to arrive is the turn's occupancy.
+  prompt?: number;
+  completion?: number;
+  total?: number;
+  // context_compacted — history was folded before this run started.
+  compaction_id?: number;
+  replaced_count?: number;
 };
 
 const WORKSPACE_TOOL_NAMES = new Set([
@@ -226,10 +246,58 @@ function ensureLiveSegments(t: ChatTurn): ReactSegment[] {
   return [emptySegment()];
 }
 
+// Builds the divider turn for a compaction fold point.
+function compactedTurn(
+  id: string,
+  createdAt: string,
+  replacedCount?: number,
+): ChatTurn {
+  return {
+    id,
+    role: "context_compacted",
+    content: "",
+    reasoning: "",
+    tools: [],
+    segments: [],
+    subEvents: [],
+    createdAt,
+    done: true,
+    replacedCount,
+  };
+}
+
+// Reconstructs a finished turn's duration from timestamps alone: an assistant
+// row is written when its run ends, the user row that provoked it when the run
+// began. Returns undefined when there's no user row above (a resumed or
+// orphaned turn), since guessing would be worse than showing nothing.
+function elapsedSincePrecedingUser(
+  rows: PersistedMessage[],
+  assistantIdx: number,
+): number | undefined {
+  for (let i = assistantIdx - 1; i >= 0; i--) {
+    if (rows[i].role !== "user") continue;
+    const ms = Date.parse(rows[assistantIdx].created_at) - Date.parse(rows[i].created_at);
+    return Number.isFinite(ms) && ms >= 0 ? ms : undefined;
+  }
+  return undefined;
+}
+
 function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
   return rows
-    .filter((r) => r.role === "user" || r.role === "assistant")
-    .map((r) => {
+    .filter(
+      (r) =>
+        r.role === "user" ||
+        r.role === "assistant" ||
+        r.role === "context_compacted",
+    )
+    .map((r, i, all) => {
+      if (r.role === "context_compacted") {
+        return compactedTurn(
+          `compaction-${r.compaction_id ?? r.seq}`,
+          r.created_at,
+          r.replaced_count,
+        );
+      }
       const flatTools = (r.tools ?? []).map(mapPersistedTool);
       let segments: ReactSegment[];
       if (r.segments && r.segments.length > 0) {
@@ -256,6 +324,8 @@ function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
                 subEvents: [],
                 createdAt: r.created_at,
                 done: true,
+                totalTokens: r.total_tokens,
+                durationMs: elapsedSincePrecedingUser(all, i),
               },
               segments,
             )
@@ -314,6 +384,10 @@ async function runSSELoop(
   // onInterruptRequired 处理任意 HITL 中断 frame（approval_required /
   // question_required）。上游按 f.type 分发到不同 store。
   onInterruptRequired: ((frame: Frame) => void) | undefined,
+  onCompacted: ((frame: Frame) => void) | undefined,
+  // Epoch ms of when this run was started, or undefined when we joined a run
+  // already in flight (resume) and therefore can't time it honestly.
+  startedAtMs: number | undefined,
   onError: (msg: string) => void,
 ) {
   if (!res.ok || !res.body) {
@@ -453,10 +527,27 @@ async function runSSELoop(
             onInterruptRequired?.(f);
           }
           break;
+        case "context_compacted":
+          onCompacted?.(f);
+          break;
         case "usage":
+          // Sub-agent frames never reach here (filtered above), so every
+          // usage frame measures the main thread. A ReAct loop emits one per
+          // model call and each is a superset of the last — overwrite.
+          if (f.total) {
+            updateAssistant((t) => ({ ...t, totalTokens: f.total }));
+          }
           break;
         case "done":
-          updateAssistant((t) => ({ ...t, done: true, streamPhase: undefined }));
+          updateAssistant((t) => ({
+            ...t,
+            done: true,
+            streamPhase: undefined,
+            durationMs:
+              startedAtMs === undefined
+                ? t.durationMs
+                : Date.now() - startedAtMs,
+          }));
           finished = true;
           break;
         case "error":
@@ -483,6 +574,7 @@ export function useChatStream(
   },
 ) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [contextLimit, setContextLimit] = useState(0);
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -517,6 +609,7 @@ export function useChatStream(
       res: Response,
       assistantTurnId: string,
       controller: AbortController,
+      startedAtMs?: number,
     ) => {
       const updateAssistant = (fn: (t: ChatTurn) => ChatTurn) => {
         setTurns((prev) => {
@@ -657,6 +750,32 @@ export function useChatStream(
               });
             }
           },
+          (f) => {
+            // The fold covered everything BEFORE this run, so the divider
+            // belongs above the user message that started it — not where
+            // the frame happens to arrive in the stream.
+            setTurns((prev) => {
+              const assistantIdx = prev.findIndex(
+                (t) => t.id === assistantTurnId,
+              );
+              if (assistantIdx < 0) return prev;
+              let at = assistantIdx;
+              for (let i = assistantIdx - 1; i >= 0; i--) {
+                if (prev[i].role === "user") {
+                  at = i;
+                  break;
+                }
+              }
+              const marker = compactedTurn(
+                `compaction-${f.compaction_id ?? Date.now()}`,
+                new Date().toISOString(),
+                f.replaced_count,
+              );
+              if (prev.some((t) => t.id === marker.id)) return prev;
+              return [...prev.slice(0, at), marker, ...prev.slice(at)];
+            });
+          },
+          startedAtMs,
           setError,
         );
       } catch (err) {
@@ -686,9 +805,9 @@ export function useChatStream(
     const controller = new AbortController();
 
     (async () => {
-      let rows: PersistedMessage[];
+      let history: MessageHistory;
       try {
-        rows = await listMessages(conversationID);
+        history = await listMessages(conversationID);
       } catch (err) {
         if (cancelled) return;
         console.error("[chat] load history failed:", err);
@@ -697,7 +816,8 @@ export function useChatStream(
         return;
       }
       if (cancelled) return;
-      const initialTurns = fromPersisted(rows);
+      setContextLimit(history.contextLimit);
+      const initialTurns = fromPersisted(history.messages);
       setTurns(initialTurns);
 
       try {
@@ -794,7 +914,8 @@ export function useChatStream(
       const trimmed = text.trim();
       if (!trimmed) return;
 
-      const nowIso = new Date().toISOString();
+      const startedAtMs = Date.now();
+      const nowIso = new Date(startedAtMs).toISOString();
       const userTurn: ChatTurn = {
         id: `u-${nowIso}`,
         role: "user",
@@ -853,7 +974,7 @@ export function useChatStream(
         return;
       }
 
-      await runStreamingResponse(res, assistantTurn.id, controller);
+      await runStreamingResponse(res, assistantTurn.id, controller, startedAtMs);
     },
     [conversationID, streaming, runStreamingResponse],
   );
@@ -963,6 +1084,7 @@ export function useChatStream(
 
   return {
     turns,
+    contextLimit,
     loading,
     streaming,
     error,

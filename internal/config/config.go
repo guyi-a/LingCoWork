@@ -47,6 +47,52 @@ func (c ApprovalFastConfig) Enabled() bool {
 	return c.APIKey != "" && c.BaseURL != "" && c.Model != ""
 }
 
+// CompactionConfig drives cross-turn context compaction: when a
+// conversation's estimated context crosses ThresholdTokens, the history is
+// folded into a summary before the next run starts.
+//
+// Shares DEEPSEEK_API_KEY like ApprovalFastConfig, but keeps its own base
+// URL / model so summarization can be pointed at a cheaper endpoint. Missing
+// APIKey disables compaction entirely — conversations then behave exactly as
+// they did before the feature existed.
+type CompactionConfig struct {
+	APIKey    string
+	BaseURL   string
+	Model     string
+	MaxTokens int
+	// TimeoutSeconds bounds one summarization call. Generous compared to the
+	// approval classifier: the request carries an entire conversation.
+	TimeoutSeconds int
+
+	// WindowNominalTokens is the model's advertised context window and
+	// WindowUsableRatio the fraction of it treated as reliably usable.
+	WindowNominalTokens int
+	WindowUsableRatio   float64
+	// ReservedOutputTokens is held back for the model's own reply.
+	ReservedOutputTokens int
+	// BufferTokens is the safety margin so compaction fires before the
+	// window is actually exhausted. It also absorbs what the estimator
+	// deliberately doesn't count: system prompt and tool schemas.
+	BufferTokens int
+
+	// KeepLastUserTurns is how many recent user turns stay verbatim. 0 folds
+	// everything already persisted; the turn being started is never folded
+	// either way, since history is read before its user row is written.
+	KeepLastUserTurns int
+	// CharsPerToken is the fallback ratio for rows with no usage data.
+	CharsPerToken int
+
+	// ToolResultTruncateThresholdChars is the size above which a tool result
+	// gets head/tail trimmed before the summarizer sees it;
+	// ToolResultTruncateKeepChars is how much of each end survives.
+	ToolResultTruncateThresholdChars int
+	ToolResultTruncateKeepChars      int
+}
+
+func (c CompactionConfig) Enabled() bool {
+	return c.APIKey != "" && c.BaseURL != "" && c.Model != ""
+}
+
 // EmbeddingConfig targets an OpenAI-compatible /embeddings endpoint used by
 // the RAG layer to encode chunks and queries. Default deployment is Aliyun
 // DashScope in "compatible-mode" (same wire shape as OpenAI's endpoint),
@@ -92,6 +138,7 @@ func (c SearchConfig) Enabled() bool {
 type Config struct {
 	LLM          LLMConfig
 	ApprovalFast ApprovalFastConfig
+	Compaction   CompactionConfig
 	Embedding    EmbeddingConfig
 	Rag          RagConfig
 	Search       SearchConfig
@@ -104,6 +151,12 @@ func Load() (*Config, error) {
 	// Optional override so main agent and classifier can use different keys
 	// later without renaming the shared default.
 	llmKey := getEnv("LLM_API_KEY", deepseekKey)
+	// COMPACTION_ENABLED=false is the off switch; otherwise compaction runs
+	// whenever there's a key to summarize with.
+	compactionKey := deepseekKey
+	if !getEnvBool("COMPACTION_ENABLED", true) {
+		compactionKey = ""
+	}
 
 	cfg := &Config{
 		LLM: LLMConfig{
@@ -121,6 +174,24 @@ func Load() (*Config, error) {
 			Model:          getEnv("APPROVAL_FAST_MODEL", "deepseek-chat"),
 			MaxTokens:      getEnvInt("APPROVAL_FAST_MAX_TOKENS", 512),
 			TimeoutSeconds: getEnvInt("APPROVAL_FAST_TIMEOUT", 15),
+		},
+		Compaction: CompactionConfig{
+			APIKey:         compactionKey,
+			BaseURL:        getEnv("COMPACTION_BASE_URL", "https://api.deepseek.com"),
+			Model:          getEnv("COMPACTION_MODEL", getEnv("LLM_MODEL", "deepseek-v4-pro")),
+			MaxTokens:      getEnvInt("COMPACTION_MAX_TOKENS", 4096),
+			TimeoutSeconds: getEnvInt("COMPACTION_TIMEOUT", 120),
+
+			WindowNominalTokens:  getEnvInt("COMPACTION_WINDOW_TOKENS", 128000),
+			WindowUsableRatio:    getEnvFloat("COMPACTION_USABLE_RATIO", 0.85),
+			ReservedOutputTokens: getEnvInt("COMPACTION_RESERVED_OUTPUT", 8000),
+			BufferTokens:         getEnvInt("COMPACTION_BUFFER_TOKENS", 4000),
+
+			KeepLastUserTurns: getEnvInt("COMPACTION_KEEP_LAST_TURNS", 0),
+			CharsPerToken:     getEnvInt("COMPACTION_CHARS_PER_TOKEN", 4),
+
+			ToolResultTruncateThresholdChars: getEnvInt("COMPACTION_TOOL_TRUNCATE_THRESHOLD", 48000),
+			ToolResultTruncateKeepChars:      getEnvInt("COMPACTION_TOOL_TRUNCATE_KEEP", 8000),
 		},
 		Embedding: EmbeddingConfig{
 			APIKey:         os.Getenv("EMBEDDING_API_KEY"),
@@ -194,6 +265,18 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func getEnvBool(key string, fallback bool) bool {

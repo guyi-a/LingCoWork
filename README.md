@@ -48,6 +48,8 @@
 ├── internal/
 │   ├── agent/        # Agent、LLM、tools、skills、prompts、runtimectx
 │   ├── approval/     # 破坏性操作审批
+│   ├── compaction/   # 跨轮次上下文压缩
+│   ├── llmhttp/      # 极简 OpenAI 兼容客户端（分类器 / 摘要器共用）
 │   ├── hitl/         # 人工介入 (ask_user)
 │   ├── handler/      # HTTP handler (chat / conversation / project / workspace / approval)
 │   ├── rag/          # chunker · embedding · indexer · retriever · store · vector
@@ -127,6 +129,7 @@ cd electron && pnpm start
 | `DEEPSEEK_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 主 LLM（DeepSeek OpenAI 兼容） |
 | `LLM_ENABLE_THINKING` / `LLM_REASONING_EFFORT` | 是否启用思考 & effort（high/max） |
 | `APPROVAL_FAST_*` | 审批 auto 模式的快速分类器（共用 `DEEPSEEK_API_KEY`） |
+| `COMPACTION_ENABLED` / `COMPACTION_MODEL` / `COMPACTION_WINDOW_TOKENS` 等 | 跨轮次上下文压缩（共用 `DEEPSEEK_API_KEY`），见下节 |
 | `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | RAG 嵌入模型（默认 DashScope `text-embedding-v3`） |
 | `RAG_DOCS_DIR` / `RAG_DB_PATH` / `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | RAG 索引 & 检索参数 |
 | `TAVILY_API_KEY` / `BOCHA_API_KEY` | 联网搜索。全空则 `web_search` 工具不注册 |
@@ -141,6 +144,21 @@ go run ./cmd/rag-search "query keywords"      # 命令行验证检索
 ```
 
 服务运行时，agent 会通过 `rag_search` 工具走同一个 sqlite 向量库。
+
+## 上下文压缩
+
+聊得够久，历史迟早撑爆模型的上下文窗口。`internal/compaction` 在**每轮开始前**估一次 token，超过阈值就把已完成的历史折成一段五段式摘要（用户意图 / 任务进展 / 当前计划 / 关键技术上下文 / 交接说明）。
+
+几个要点：
+
+- **只追加，不删改**。压缩产生 `compactions` 表里的一行「截止到 seq N 的内容由这段摘要代表」，原始消息一条不动。装配 LLM 上下文时才做投影——折叠掉的行换成一条合成 user 消息；UI 那边照常渲染全量历史，只在折叠点画一条分隔线。
+- **token 估算是混合式**。拿最近一条 assistant 行上记录的真实 usage 做基线（只记主 agent 的，子 agent 有自己独立的上下文），其后的增量才按字符粗估，误差不会一路累积。
+- **只在轮次之间跑**。压缩发生在 `ChatService.Start` 里、agent 启动之前；HITL 恢复走 checkpoint，完全不碰这条路径。单轮内部的膨胀（比如一次 `deep_research` 连调几十个工具）不在覆盖范围内。
+- **失败静默降级**。摘要超时或报错就跳过，这一轮照常用完整历史跑，压缩绝不阻断对话。
+
+阈值 = `floor(WINDOW_TOKENS × USABLE_RATIO) − RESERVED_OUTPUT − BUFFER`，默认 `96800`。`BUFFER` 同时兜住估算里故意不算的 system prompt 和工具 schema。全部参数见 [`.env.example`](.env.example)。
+
+每轮回复末尾会显示 `43.2k / 96.8k · 3.4s`——左边是**上下文占用**，不是本轮开销。ReAct 循环里每次模型调用的 usage 都涵盖到那一刻为止的完整上下文，累加它等于把早期历史重复计好几遍；这里取的是最后一次调用的值，也正是压缩估算的锚点，所以看到的数和决定何时折叠的数始终是同一个。压缩关闭时分母消失，只剩裸 token 数。
 
 ## 架构备注
 

@@ -103,6 +103,109 @@ func TestFoldMessages_HITLEmptyAssistantDoesNotDuplicateTools(t *testing.T) {
 	}
 }
 
+func TestInsertCompactionMarker_LandsAtFoldPoint(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{
+		{Seq: 1, Role: "user", Content: "first", CreatedAt: now},
+		{Seq: 2, Role: "assistant", Content: "reply", CreatedAt: now},
+		{Seq: 3, Role: "user", Content: "second", CreatedAt: now},
+		{Seq: 4, Role: "assistant", Content: "reply2", CreatedAt: now},
+	}
+	folded := foldMessages(msgs)
+	out := insertCompactionMarker(folded, &model.Compaction{
+		ID: 9, ThroughSeq: 2, ReplacedCount: 2, CreatedAt: now,
+	})
+
+	if len(out) != len(folded)+1 {
+		t.Fatalf("len=%d want %d", len(out), len(folded)+1)
+	}
+	if out[2].Role != roleContextCompacted {
+		t.Fatalf("marker at index 2 is %q; got roles %v", out[2].Role, roles(out))
+	}
+	if out[2].CompactionID != 9 || out[2].ReplacedCount != 2 {
+		t.Fatalf("marker=%+v", out[2])
+	}
+	// Rows on either side keep their order.
+	if out[0].Seq != 1 || out[1].Seq != 2 || out[3].Seq != 3 {
+		t.Fatalf("ordering broken: %v", roles(out))
+	}
+	// The summary text is model-only and must never reach the client.
+	if out[2].Content != "" {
+		t.Fatalf("marker leaked content: %q", out[2].Content)
+	}
+}
+
+func TestInsertCompactionMarker_NilIsPassThrough(t *testing.T) {
+	items := []messageItem{{Seq: 1, Role: "user"}}
+	if got := insertCompactionMarker(items, nil); len(got) != 1 {
+		t.Fatalf("len=%d want 1", len(got))
+	}
+}
+
+// An assistant turn folds to its LAST row's seq, so a turn that straddles the
+// boundary sorts after the marker — the correct side for a partially-kept turn.
+func TestInsertCompactionMarker_GoesFirstWhenNothingPrecedes(t *testing.T) {
+	items := []messageItem{{Seq: 5, Role: "user"}, {Seq: 6, Role: "assistant"}}
+	out := insertCompactionMarker(items, &model.Compaction{ID: 1, ThroughSeq: 2})
+	if out[0].Role != roleContextCompacted {
+		t.Fatalf("marker should lead; got %v", roles(out))
+	}
+}
+
+func roles(items []messageItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Role
+	}
+	return out
+}
+
+// Usage lands on the run's final assistant row, but the UI sees one merged
+// turn — the figure has to survive the merge, and it must be hoisted rather
+// than summed: each ReAct step's count already covers the whole context.
+func TestFoldMessages_HoistsTotalTokensOntoMergedTurn(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{
+		{Seq: 1, Role: "user", Content: "search", CreatedAt: now},
+		{
+			Seq:       2,
+			Role:      "assistant",
+			Content:   "looking",
+			ToolCalls: `[{"id":"c1","name":"web_search","args_json":"{}"}]`,
+			CreatedAt: now,
+		},
+		{Seq: 3, Role: "tool", ToolCallID: "c1", ToolName: "web_search", Content: "ok", Extra: `{"ok":true}`, CreatedAt: now},
+		{Seq: 4, Role: "assistant", Content: "found it", TotalTokens: 42000, CreatedAt: now},
+	}
+
+	out := foldMessages(msgs)
+	if len(out) != 2 {
+		t.Fatalf("len=%d want 2", len(out))
+	}
+	if out[1].TotalTokens != 42000 {
+		t.Fatalf("total_tokens=%d want 42000", out[1].TotalTokens)
+	}
+	if out[0].TotalTokens != 0 {
+		t.Fatalf("user row picked up tokens: %d", out[0].TotalTokens)
+	}
+}
+
+// A turn whose last row reported nothing keeps the earlier row's figure
+// rather than reverting to zero and blanking the readout.
+func TestFoldMessages_KeepsEarlierTokensWhenLastRowHasNone(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{
+		{Seq: 1, Role: "user", Content: "hi", CreatedAt: now},
+		{Seq: 2, Role: "assistant", Content: "part one", TotalTokens: 1200, CreatedAt: now},
+		{Seq: 3, Role: "assistant", Content: "part two", CreatedAt: now},
+	}
+
+	out := foldMessages(msgs)
+	if out[1].TotalTokens != 1200 {
+		t.Fatalf("total_tokens=%d want 1200", out[1].TotalTokens)
+	}
+}
+
 func TestFoldMessages_LegacySingleRow(t *testing.T) {
 	now := time.Now()
 	msgs := []model.Message{

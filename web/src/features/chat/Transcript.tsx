@@ -5,9 +5,11 @@ import type { ChatTurn, SubAgentEvent } from "@/hooks/useChatStream";
 export function Transcript({
   turns,
   streaming,
+  contextLimit,
 }: {
   turns: ChatTurn[];
   streaming: boolean;
+  contextLimit: number;
 }) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -55,6 +57,7 @@ export function Transcript({
             ownedToolIds={ownedToolIds}
             showRule={i > 0}
             streaming={streaming && i === turns.length - 1 && t.role === "assistant"}
+            contextLimit={contextLimit}
           />
         ))}
         <div ref={endRef} />

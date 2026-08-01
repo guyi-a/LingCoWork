@@ -18,6 +18,7 @@ func NewDB(dsn string) (*gorm.DB, error) {
 		&model.Message{},
 		&model.Checkpoint{},
 		&model.PendingApproval{},
+		&model.Compaction{},
 	); err != nil {
 		return nil, err
 	}

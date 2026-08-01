@@ -404,6 +404,9 @@ func drainAssistantStream(
 			Reply:            u.CompletionTokens,
 			Total:            u.TotalTokens,
 		}))
+		if isRoot && collector != nil {
+			collector.SetTotalTokens(u.TotalTokens)
+		}
 	}
 
 	// Record this turn's structured shape for the service layer's raw-row
@@ -593,6 +596,9 @@ func emitNonStreamAssistant(
 			Reply:            u.CompletionTokens,
 			Total:            u.TotalTokens,
 		}))
+		if isRoot && collector != nil {
+			collector.SetTotalTokens(u.TotalTokens)
+		}
 	}
 }
 

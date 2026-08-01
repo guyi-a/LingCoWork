@@ -67,6 +67,13 @@ type Frame struct {
 	Prompt int `json:"prompt,omitempty"`
 	Reply  int `json:"completion,omitempty"`
 	Total  int `json:"total,omitempty"`
+
+	// context_compacted frame — history up to CompactedSeq was folded into a
+	// summary before this run started. The UI draws a marker at that point;
+	// the summary text itself is never shown.
+	CompactionID  uint64 `json:"compaction_id,omitempty"`
+	CompactedSeq  int    `json:"compacted_seq,omitempty"`
+	ReplacedCount int    `json:"replaced_count,omitempty"`
 }
 
 // ApprovalInfo is what an approval middleware attaches to tool.Interrupt so
@@ -190,6 +197,12 @@ type RunCollector struct {
 	// per-message rows (assistant + tool) so Claude's strict tool_use ↔
 	// tool_result pairing survives across conversation turns.
 	turns []TurnRecord
+	// totalTokens is the last provider-reported context size for the ROOT
+	// agent. Sub-agent usage is never recorded here — each sub-agent runs
+	// its own private context, so its totals say nothing about how full the
+	// main thread's window is. The compaction estimator uses this as its
+	// baseline, so mixing the two would badly skew the threshold.
+	totalTokens int
 }
 
 func NewRunCollector() *RunCollector {
@@ -210,6 +223,22 @@ func (c *RunCollector) Reasoning() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.reasoning.String()
+}
+
+// SetTotalTokens records root-agent usage. Callers must gate on isRoot.
+func (c *RunCollector) SetTotalTokens(n int) {
+	if n <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.totalTokens = n
+}
+
+func (c *RunCollector) TotalTokens() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalTokens
 }
 
 func (c *RunCollector) Tools() []ToolEventRecord {

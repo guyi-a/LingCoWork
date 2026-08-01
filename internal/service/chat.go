@@ -13,6 +13,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/multimodal"
 	"github.com/guyi-a/Interview-Agent/internal/agent/toolerr"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
+	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/hitl"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
@@ -29,6 +30,9 @@ type ChatService struct {
 	pending       *approval.PendingStore
 	approvalModes *approval.ModeStore
 	multimodal    bool
+	// compactor is nil when context compaction isn't configured; all of its
+	// methods tolerate a nil receiver, so call sites don't branch.
+	compactor *compaction.Compactor
 }
 
 func NewChatService(
@@ -41,6 +45,7 @@ func NewChatService(
 	pending *approval.PendingStore,
 	approvalModes *approval.ModeStore,
 	multimodal bool,
+	compactor *compaction.Compactor,
 ) *ChatService {
 	return &ChatService{
 		runner:        runner,
@@ -52,6 +57,7 @@ func NewChatService(
 		pending:       pending,
 		approvalModes: approvalModes,
 		multimodal:    multimodal,
+		compactor:     compactor,
 	}
 }
 
@@ -96,16 +102,13 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) 
 		}
 	}
 
+	// Loaded before the new user row is written, so `prior` is exactly the
+	// completed turns. Compaction folds only what's in here, which is why
+	// the incoming message can never end up summarized away.
 	prior, err := s.msgRepo.List(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-
-	history := toSchemaMessages(id, prior, s.multimodal)
-	if workspaceContext := s.workspaceContext(ctx, id); workspaceContext != "" {
-		history = append([]*schema.Message{schema.SystemMessage(workspaceContext)}, history...)
-	}
-	history = append(history, multimodal.BuildUserMessage(userMsg, s.multimodal))
 
 	if err := s.msgRepo.Append(ctx, &model.Message{
 		ConversationID: id,
@@ -119,6 +122,8 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) 
 		_ = s.convRepo.SetTitleIfEmpty(ctx, id, title)
 	}
 
+	workspaceCtx := s.workspaceContext(ctx, id)
+
 	buf := s.manager.Create(id)
 	runCtx, cancel := context.WithCancel(context.Background())
 	buf.SetCancel(cancel)
@@ -128,7 +133,32 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) 
 	// only pending items visible to the HTTP layer belong to this run.
 	s.pending.Clear(id)
 
-	go s.runAgent(runCtx, id, history, buf)
+	// Compaction and history assembly happen inside the goroutine: a
+	// summarization call can take tens of seconds, and blocking here would
+	// hold POST /chat/:id open with nothing on screen. The agent still
+	// starts strictly after compaction settles, so the two never race over
+	// the context they share.
+	go func() {
+		active := s.compactor.MaybeCompact(runCtx, id, prior)
+		if active != nil {
+			buf.Append(stream.Encode(stream.Frame{
+				Type:          "context_compacted",
+				CompactionID:  active.ID,
+				CompactedSeq:  active.ThroughSeq,
+				ReplacedCount: active.ReplacedCount,
+			}))
+		} else {
+			active = s.compactor.Active(runCtx, id)
+		}
+
+		history := toSchemaMessages(id, prior, s.multimodal, active)
+		if workspaceCtx != "" {
+			history = append([]*schema.Message{schema.SystemMessage(workspaceCtx)}, history...)
+		}
+		history = append(history, multimodal.BuildUserMessage(userMsg, s.multimodal))
+
+		s.runAgent(runCtx, id, history, buf)
+	}()
 
 	return buf, nil
 }
@@ -457,6 +487,11 @@ func (s *ChatService) persistRun(convID string, collector *stream.RunCollector, 
 				}
 			}
 			if i == lastAssistantEmit {
+				// Anchor the compaction estimator on the provider's own·
+				// count for the whole run rather than re-deriving it from
+				// characters. Only the final row gets it: the intermediate
+				// ReAct turns are prefixes of this same context.
+				assistantRow.TotalTokens = collector.TotalTokens()
 				payload := map[string]any{}
 				if len(legacyTools) > 0 {
 					payload["tools"] = legacyTools
@@ -561,7 +596,15 @@ func padMissingToolResults(t stream.TurnRecord) stream.TurnRecord {
 // in the same list, the whole ToolCalls field is stripped from that message
 // and a warn is logged. Claude requires strict tool_use ↔ tool_result
 // pairing; a stray tool_use with no tool_result would 400.
-func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled bool) []*schema.Message {
+//
+// When `active` is non-nil, the rows it has folded are dropped and a
+// synthetic user message carrying the summary is prepended in their place.
+// The drop happens BEFORE haveResult is built, so a surviving assistant row
+// whose tool results were folded away is correctly seen as orphaned and
+// stripped, rather than replayed against results the model can't see.
+func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled bool, active *model.Compaction) []*schema.Message {
+	rows = compaction.ActiveRows(rows, active)
+
 	// Pass 1: collect all tool_call_ids we actually have tool_result rows for.
 	haveResult := make(map[string]struct{})
 	for _, r := range rows {
@@ -570,7 +613,10 @@ func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled boo
 		}
 	}
 
-	out := make([]*schema.Message, 0, len(rows))
+	out := make([]*schema.Message, 0, len(rows)+1)
+	if summary := compaction.SummaryMessage(active); summary != "" {
+		out = append(out, schema.UserMessage(summary))
+	}
 	for _, r := range rows {
 		// User rows may carry [image: /abs/path] markers that need to be
 		// expanded into multipart image blocks for the model. Delegate to
@@ -627,12 +673,14 @@ func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled boo
 				}
 			}
 		}
-		// Skip empty phantom assistants (resume HITL used to persist these
-		// between an open tool_calls row and its tool result). Emitting them
-		// breaks OpenAI/DeepSeek pairing: tool_calls must be followed by tool.
-		if r.Role == string(schema.Assistant) &&
-			m.Content == "" && m.ReasoningContent == "" &&
-			len(m.ToolCalls) == 0 && m.ToolCallID == "" {
+		// An assistant message only carries payload the API recognises if it
+		// has content or tool_calls; reasoning_content does not count, and
+		// sending a row with neither earns a 400. Rows like that are real:
+		// a run cancelled mid-thinking persists its reasoning and nothing
+		// else, and the orphan defence above can empty out a tool-call-only
+		// row. They stay in the DB for the transcript, but never go on the
+		// wire.
+		if r.Role == string(schema.Assistant) && m.Content == "" && len(m.ToolCalls) == 0 {
 			continue
 		}
 		out = append(out, m)

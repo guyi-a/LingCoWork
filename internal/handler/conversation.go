@@ -15,10 +15,15 @@ import (
 
 type ConversationHandler struct {
 	svc *service.ConversationService
+	// contextLimit is the token count at which history gets folded, or 0 when
+	// compaction is off. It rides along with the messages payload rather than
+	// living on its own endpoint so the numerator and the denominator of the
+	// occupancy readout always arrive together.
+	contextLimit int
 }
 
-func NewConversationHandler(svc *service.ConversationService) *ConversationHandler {
-	return &ConversationHandler{svc: svc}
+func NewConversationHandler(svc *service.ConversationService, contextLimit int) *ConversationHandler {
+	return &ConversationHandler{svc: svc, contextLimit: contextLimit}
 }
 
 func (h *ConversationHandler) Register(r *gin.Engine) {
@@ -100,7 +105,25 @@ type messageItem struct {
 	Segments         []segmentItem       `json:"segments,omitempty"`
 	SubEvents        []subAgentEventItem `json:"sub_events,omitempty"`
 	CreatedAt        string              `json:"created_at"`
+
+	// TotalTokens is the provider's own count for the context this turn ran
+	// against — the same number the compaction estimator anchors on, so the
+	// occupancy the UI shows and the occupancy that decides when to fold are
+	// never two different figures. Only the final assistant row of a run
+	// carries it; foldMessages hoists it onto the merged turn.
+	TotalTokens int `json:"total_tokens,omitempty"`
+
+	// Set only on the synthetic role="context_compacted" marker.
+	CompactionID  uint64 `json:"compaction_id,omitempty"`
+	ReplacedCount int    `json:"replaced_count,omitempty"`
 }
+
+// roleContextCompacted marks where history was folded into a summary. It is
+// not a stored row — the handler synthesizes it from the compaction record
+// so the divider survives a reload the same way the live SSE frame draws it
+// mid-run. The summary text is intentionally not sent: it is context for the
+// model, not something the user asked to read.
+const roleContextCompacted = "context_compacted"
 
 func (h *ConversationHandler) Messages(c *gin.Context) {
 	id := c.Param("id")
@@ -109,8 +132,35 @@ func (h *ConversationHandler) Messages(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	out := foldMessages(msgs)
-	c.JSON(http.StatusOK, gin.H{"messages": out})
+	out := insertCompactionMarker(foldMessages(msgs), h.svc.ActiveCompaction(c.Request.Context(), id))
+	c.JSON(http.StatusOK, gin.H{"messages": out, "context_limit": h.contextLimit})
+}
+
+// insertCompactionMarker splices the fold divider into the folded history.
+//
+// It lands after the last entry at or before ThroughSeq. foldMessages sets a
+// merged assistant turn's Seq to its LAST row, so an entry compares <= only
+// when the whole turn was folded — a turn straddling the boundary would sort
+// after the marker, which is the correct side for a partially-kept turn.
+func insertCompactionMarker(items []messageItem, active *model.Compaction) []messageItem {
+	if active == nil {
+		return items
+	}
+	marker := messageItem{
+		Seq:           active.ThroughSeq,
+		Role:          roleContextCompacted,
+		CreatedAt:     active.CreatedAt.Format(time.RFC3339),
+		CompactionID:  active.ID,
+		ReplacedCount: active.ReplacedCount,
+	}
+	at := 0
+	for at < len(items) && items[at].Seq <= active.ThroughSeq {
+		at++
+	}
+	out := make([]messageItem, 0, len(items)+1)
+	out = append(out, items[:at]...)
+	out = append(out, marker)
+	return append(out, items[at:]...)
 }
 
 func (h *ConversationHandler) Delete(c *gin.Context) {
@@ -128,7 +178,11 @@ func fromModelMessage(m model.Message) messageItem {
 		Role:             m.Role,
 		Content:          m.Content,
 		ReasoningContent: m.ReasoningContent,
-		CreatedAt:        m.CreatedAt.Format(time.RFC3339),
+		// Nano precision: the client derives a turn's wall-clock duration by
+		// subtracting the user row's timestamp from the assistant row's, and
+		// whole seconds would quantise every short turn to 0s or 1s.
+		CreatedAt:   m.CreatedAt.Format(time.RFC3339Nano),
+		TotalTokens: m.TotalTokens,
 	}
 	if m.Extra != "" {
 		var payload struct {
@@ -318,6 +372,11 @@ func foldMessages(msgs []model.Message) []messageItem {
 				prev.SubEvents = append(prev.SubEvents, item.SubEvents...)
 				prev.Seq = item.Seq
 				prev.CreatedAt = item.CreatedAt
+				// Only the run's final row carries usage, and it is the one
+				// that measures the whole context — hoist it, never sum.
+				if item.TotalTokens > 0 {
+					prev.TotalTokens = item.TotalTokens
+				}
 				rebuildFlatFromSegments(prev)
 				continue
 			}

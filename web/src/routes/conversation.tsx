@@ -60,6 +60,7 @@ export function Conversation() {
     turns,
     loading,
     streaming,
+    contextLimit,
     send,
     cancel,
     resume,
@@ -160,7 +161,11 @@ export function Conversation() {
       <ConversationHeader conversationId={id} />
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col">
-          <Transcript turns={turns} streaming={streaming} />
+          <Transcript
+            turns={turns}
+            streaming={streaming}
+            contextLimit={contextLimit}
+          />
           <div className="relative">
             <PromptInput
               streaming={streaming}

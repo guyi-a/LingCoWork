@@ -13,7 +13,14 @@ type Message struct {
 	ToolCallID       string    `gorm:"type:varchar(64)"`
 	ToolName         string    `gorm:"type:varchar(128)"`
 	Extra            string    `gorm:"type:text"`
-	CreatedAt        time.Time
+	// TotalTokens is the provider-reported context size after this message,
+	// recorded only on root-agent assistant rows. The compaction estimator
+	// uses the most recent non-zero value as its baseline instead of
+	// character-counting the whole history. Sub-agent usage is deliberately
+	// excluded: it measures that agent's own private context, not the
+	// main thread's.
+	TotalTokens int `gorm:"default:0"`
+	CreatedAt   time.Time
 }
 
 func (Message) TableName() string {

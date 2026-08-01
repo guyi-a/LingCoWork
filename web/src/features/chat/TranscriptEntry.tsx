@@ -8,8 +8,8 @@ import { parseAttachmentMarkers } from "@/features/chat/attachments-store";
 function CopyIcon() {
   return (
     <svg
-      width="12"
-      height="12"
+      width="11"
+      height="11"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -27,8 +27,8 @@ function CopyIcon() {
 function CheckIcon() {
   return (
     <svg
-      width="12"
-      height="12"
+      width="11"
+      height="11"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -111,6 +111,9 @@ function CopyButton({ text }: { text: string }) {
       }}
       className={cn(
         "ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded",
+        // Sized explicitly rather than inherited: this sits in the turn
+        // footer, where the surrounding text is body-sized.
+        "font-mono text-[10px] leading-none",
         "text-muted hover:text-ink hover:bg-subtle",
         "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
         "transition-opacity",
@@ -119,17 +122,97 @@ function CopyButton({ text }: { text: string }) {
       aria-label={copied ? "已复制" : "复制消息"}
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
-      <span className="tracking-normal normal-case">
-        {copied ? "已复制" : "复制"}
-      </span>
+      <span>{copied ? "已复制" : "复制"}</span>
     </button>
+  );
+}
+
+function formatTokens(n: number): string {
+  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+}
+
+// TurnFooter closes out a finished assistant turn: how full the model's
+// context was when it ran, how long it took, and the copy affordance.
+//
+// The token figure is context occupancy, not spend. Summing each model call's
+// usage across a ReAct loop would count the same history once per call and
+// tell you nothing about how close the conversation is to being folded —
+// which, with compaction in play, is the question worth answering. contextLimit
+// is 0 when compaction is off, and the denominator is dropped accordingly.
+function TurnFooter({
+  text,
+  totalTokens,
+  durationMs,
+  contextLimit,
+}: {
+  text: string;
+  totalTokens?: number;
+  durationMs?: number;
+  contextLimit: number;
+}) {
+  const parts: string[] = [];
+  if (totalTokens) {
+    parts.push(
+      contextLimit > 0
+        ? `${formatTokens(totalTokens)} / ${formatTokens(contextLimit)}`
+        : `${formatTokens(totalTokens)} tokens`,
+    );
+  }
+  if (durationMs !== undefined) parts.push(formatDuration(durationMs));
+
+  const tooltip =
+    totalTokens && contextLimit > 0
+      ? `上下文 ${totalTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens（${Math.round(
+          (totalTokens / contextLimit) * 100,
+        )}%），超过阈值后历史会被折叠为摘要`
+      : undefined;
+
+  if (parts.length === 0 && !text) return null;
+
+  return (
+    <div className="mt-3 flex items-center gap-3">
+      {parts.length > 0 && (
+        <span
+          className="font-mono text-[10px] text-muted tabular-nums"
+          {...(tooltip ? { title: tooltip } : {})}
+        >
+          {parts.join(" · ")}
+        </span>
+      )}
+      {text ? <CopyButton text={text} /> : null}
+    </div>
   );
 }
 
 const ROLE_LABEL: Record<ChatTurn["role"], string> = {
   user: "CANDIDATE",
   assistant: "INTERVIEWER",
+  context_compacted: "",
 };
+
+// Divider marking where history was folded into a summary to fit the model's
+// context window. Everything above it is still rendered in full — only what
+// the model receives was condensed, so this is an informational rule rather
+// than a gap in the transcript.
+function CompactedDivider({ replacedCount }: { replacedCount?: number }) {
+  return (
+    <div className="my-8 flex items-center gap-3" role="separator">
+      <span className="h-px flex-1 bg-rule" />
+      <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-muted whitespace-nowrap">
+        上下文已压缩
+        {replacedCount ? ` · ${replacedCount} 条` : ""}
+      </span>
+      <span className="h-px flex-1 bg-rule" />
+    </div>
+  );
+}
 
 // Sub-agent tools — wrapped via adk.NewAgentTool on the backend. When
 // these appear in tool_call events, label them as AGENT so the UI reflects
@@ -195,6 +278,7 @@ export function TranscriptEntry({
   ownedToolIds,
   showRule,
   streaming,
+  contextLimit,
 }: {
   turn: ChatTurn;
   // Conversation-wide subEvents pool. Provided so tool cards can pick up
@@ -208,7 +292,13 @@ export function TranscriptEntry({
   ownedToolIds: Set<string>;
   showRule: boolean;
   streaming: boolean;
+  // Token threshold at which history gets folded, or 0 when compaction is
+  // off. Only used to give the footer's occupancy figure a denominator.
+  contextLimit: number;
 }) {
+  if (turn.role === "context_compacted") {
+    return <CompactedDivider replacedCount={turn.replacedCount} />;
+  }
   const isUser = turn.role === "user";
   return (
     <article
@@ -232,9 +322,6 @@ export function TranscriptEntry({
           <span className="text-accent normal-case tracking-normal lowercase">
             ● streaming
           </span>
-        )}
-        {turn.role === "assistant" && turn.content && !streaming && (
-          <CopyButton text={turn.content} />
         )}
       </header>
 
@@ -335,6 +422,15 @@ export function TranscriptEntry({
           })()}
         </div>
       ) : null}
+
+      {turn.role === "assistant" && !streaming && (
+        <TurnFooter
+          text={turn.content}
+          totalTokens={turn.totalTokens}
+          durationMs={turn.durationMs}
+          contextLimit={contextLimit}
+        />
+      )}
 
       {turn.error && (
         <p className="mt-2 text-sm text-red-700">⚠ {turn.error}</p>
