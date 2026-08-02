@@ -19,10 +19,12 @@ import { cn } from "@/lib/utils";
 //   - Clicking anywhere in the card that isn't an interactive control
 //     focuses the textarea, widening the hit target.
 //   - Textarea auto-grows with content up to a max height, then scrolls.
-//   - Streaming mode: textarea stays enabled but the send button becomes
-//     a stop button (inverted colours + square glyph).
+//   - Streaming mode: textarea stays enabled and submitting still works —
+//     the caller queues it. The stop button appears alongside a secondary
+//     send button so both actions stay reachable by mouse.
 export function PromptInput({
   streaming,
+  blocked = false,
   onSend,
   onCancel,
   leftActions,
@@ -32,6 +34,14 @@ export function PromptInput({
   onImageFiles,
 }: {
   streaming: boolean;
+  // Hard stop on submitting: a HITL interrupt is waiting for the user. The
+  // dock covers this composer visually, but the textarea is still in the
+  // DOM and may hold focus, and a POST right now would start a second run
+  // beside the paused checkpoint. Draft text is kept — the user gets it
+  // back once they answer.
+  blocked?: boolean;
+  // Called on submit regardless of `streaming`. It's the caller's job to
+  // decide between sending now and queueing.
   onSend: (text: string) => void;
   onCancel: () => void;
   // Bottom-left toolbar cluster. Typically the attach `+` button.
@@ -68,12 +78,12 @@ export function PromptInput({
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
-  const canSend = (text.trim().length > 0 || hasAttachments) && !streaming;
+  const canSend = (text.trim().length > 0 || hasAttachments) && !blocked;
 
   const submit = () => {
     const t = text.trim();
     if (!t && !hasAttachments) return;
-    if (streaming) return;
+    if (blocked) return;
     onSend(t);
     setText("");
     // Reset height explicitly — the effect will re-run on next render but
@@ -176,7 +186,13 @@ export function PromptInput({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
             onPaste={onPaste}
-            placeholder={streaming ? "正在响应…" : "写点什么"}
+            placeholder={
+              blocked
+                ? "先回答上面的问题"
+                : streaming
+                  ? "响应中 · 继续输入会排队"
+                  : "写点什么"
+            }
             className={cn(
               "block w-full resize-none bg-transparent px-5 pt-4 pb-2",
               "text-[15px] leading-7 text-ink",
@@ -190,13 +206,37 @@ export function PromptInput({
             <div className="flex items-center gap-2 pl-2 min-w-0">
               {leftActions ?? (
                 <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
-                  {streaming ? "响应中" : "Enter 发送 · Shift+Enter 换行"}
+                  {blocked
+                    ? "等待你的回答"
+                    : streaming
+                      ? "Enter 加入队列 · Shift+Enter 换行"
+                      : "Enter 发送 · Shift+Enter 换行"}
                 </div>
               )}
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
               {rightActions}
+              {/* While streaming both actions stay available: queueing is
+                  secondary (outlined) so stop keeps the filled emphasis. */}
+              {streaming && (
+                <button
+                  type="button"
+                  onClick={submit}
+                  disabled={!canSend}
+                  title="加入队列 (Enter)"
+                  aria-label="加入队列"
+                  className={cn(
+                    "flex h-9 w-9 items-center justify-center rounded-lg",
+                    "border transition-colors",
+                    canSend
+                      ? "border-rule bg-paper text-ink hover:bg-subtle cursor-pointer"
+                      : "border-rule/60 bg-subtle text-muted cursor-not-allowed",
+                  )}
+                >
+                  <ArrowUpIcon />
+                </button>
+              )}
               {streaming ? (
                 <button
                   type="button"

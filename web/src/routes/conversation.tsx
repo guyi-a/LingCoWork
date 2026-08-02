@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router";
 import { useChatStream } from "@/hooks/useChatStream";
 import { useConversationStore } from "@/stores/conversations";
@@ -13,8 +13,14 @@ import {
   useAttachmentsStore,
   saveImageFiles,
   serializeAttachments,
+  parseAttachmentMarkers,
   type AttachedFile,
 } from "@/features/chat/attachments-store";
+import { QueuedMessagesBar } from "@/features/chat/QueuedMessagesBar";
+import { useQueueStore } from "@/features/chat/queue-store";
+import { useQueueFlush } from "@/features/chat/useQueueFlush";
+import { useApprovalStore, type PendingApproval } from "@/features/chat/approval-store";
+import { useQuestionStore, type PendingQuestion } from "@/features/chat/question-store";
 import { electronAPI } from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
@@ -23,6 +29,16 @@ import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 // store hasn't changed, otherwise useSyncExternalStore loops (same trick
 // used in the approval and attachments stores).
 const EMPTY_ATTACHMENTS: AttachedFile[] = [];
+const EMPTY_APPROVALS: PendingApproval[] = [];
+const EMPTY_QUESTIONS: PendingQuestion[] = [];
+
+// Sidebar preview for a message whose attachment markers are already baked
+// into the text. Prose wins; a marker-only message falls back to the first
+// attachment's name.
+function previewOf(finalText: string): string {
+  const { attachments, text } = parseAttachmentMarkers(finalText);
+  return text.trim() || attachments[0]?.name || "附件";
+}
 
 export function Conversation() {
   const { id } = useParams();
@@ -60,7 +76,9 @@ export function Conversation() {
     turns,
     loading,
     streaming,
+    reconnecting,
     contextLimit,
+    error,
     send,
     cancel,
     resume,
@@ -71,11 +89,47 @@ export function Conversation() {
     projectId,
   });
 
+  // A run paused on an approval or an ask_user reports streaming=false — its
+  // SSE buffer was finished at the interrupt — so `streaming` alone can't tell
+  // us whether the conversation is free. The composer blocks on this, and the
+  // queue holds behind it.
+  const approvals = useApprovalStore((s) => s.pending[id] ?? EMPTY_APPROVALS);
+  const questions = useQuestionStore((s) => s.pending[id] ?? EMPTY_QUESTIONS);
+  const hitlPending = approvals.length > 0 || questions.length > 0;
+
+  // Answering an interrupt drops it from its store immediately, but the
+  // continuation run only exists once resume's probe comes back. In between,
+  // every flag we have reads idle. Hold it shut explicitly.
+  const [resuming, setResuming] = useState(false);
+
+  // The conversation might have a run attached on the server side. Wider than
+  // `streaming`: `reconnecting` covers the mount-time probe and `resuming` the
+  // post-interrupt handoff, both of which are windows where a run is live but
+  // no frames have reached us yet.
+  const busy = streaming || reconnecting || resuming;
+
+  const enqueue = useQueueStore((s) => s.enqueue);
+  const setQueuePaused = useQueueStore((s) => s.setPaused);
+
+  // The actual send, shared by the composer and the queue flusher. Takes
+  // text with attachment markers already baked in.
+  const dispatch = useCallback(
+    async (finalText: string) => {
+      touch(id, previewOf(finalText), { projectId });
+      await send(finalText);
+      refreshConvs();
+      refreshProjects();
+    },
+    [id, projectId, touch, send, refreshConvs, refreshProjects],
+  );
+
   const onSend = async (text: string) => {
     // Snapshot then clear so the chip strip disappears in the same paint
     // the user's message renders in the transcript. If the send throws we
     // don't restore — the attachments are already visible in the sent
-    // message's marker text, so re-adding them would be confusing.
+    // message's marker text, so re-adding them would be confusing. Queued
+    // messages freeze their attachments here too, so changing the selection
+    // afterwards can't rewrite a message that's already in line.
     const files = attachments;
     const markers = files.length > 0 ? serializeAttachments(files) : "";
     const finalText = markers
@@ -83,13 +137,30 @@ export function Conversation() {
         ? `${markers}\n${text}`
         : markers
       : text;
-
-    touch(id, text.trim() || files[0]?.name || "附件", { projectId });
     if (files.length > 0) clearAttachments(id);
-    await send(finalText);
-    refreshConvs();
-    refreshProjects();
+
+    if (busy) {
+      enqueue(id, finalText);
+      return;
+    }
+    await dispatch(finalText);
   };
+
+  useQueueFlush({
+    conversationID: id,
+    busy,
+    hitlPending,
+    error,
+    dispatch,
+  });
+
+  // Stopping is an interrupt, so it holds the queue rather than letting the
+  // next message fire the instant the run unwinds. The bar's "继续发送" is
+  // how the user releases it.
+  const onCancel = useCallback(async () => {
+    setQueuePaused(id, true);
+    await cancel();
+  }, [id, setQueuePaused, cancel]);
 
   const onPickFiles = useCallback(async () => {
     try {
@@ -114,8 +185,11 @@ export function Conversation() {
   // After the user answers an approval, refresh the sidebar immediately so
   // the "等待审批" pill reflects that the interrupt was handled. The resumed
   // stream will refresh again when it drains for the final idle / next-pending
-  // state.
+  // state. This also runs in the same batch as the approval store's drop,
+  // which is what keeps the queue from catching a momentarily idle-looking
+  // conversation before resume takes over.
   const onApprovalDecision = useCallback(async (item: { callId: string }, decision: "approve" | "deny") => {
+    setResuming(true);
     markApprovalHandled(item.callId, decision);
     refreshConvs();
     refreshProjects();
@@ -124,13 +198,21 @@ export function Conversation() {
   // ask_user 场景：用户答完 / 取消后立即把对应 tool 卡从 pending 打成
   // running 或 cancelled，避免 UI 卡在 pending 状态直到 resume 事件回填。
   const onQuestionDecision = useCallback(async (callId: string, cancelled: boolean) => {
+    setResuming(true);
     markQuestionAnswered(callId, cancelled);
     refreshConvs();
     refreshProjects();
   }, [markQuestionAnswered, refreshConvs, refreshProjects]);
 
+  // Both interrupt cards call this right after their decision callback, and
+  // resume only settles once the continuation stream has fully drained — so
+  // clearing the hold here can't reopen the gap it was covering.
   const onApprovalResume = useCallback(async () => {
-    await resume();
+    try {
+      await resume();
+    } finally {
+      setResuming(false);
+    }
     refreshConvs();
     refreshProjects();
   }, [resume, refreshConvs, refreshProjects]);
@@ -166,11 +248,16 @@ export function Conversation() {
             streaming={streaming}
             contextLimit={contextLimit}
           />
+          {/* Outside the relative wrapper on purpose: the interrupt dock
+              covers that wrapper edge to edge, and a queued message is worth
+              seeing while deciding on an approval. */}
+          <QueuedMessagesBar conversationID={id} />
           <div className="relative">
             <PromptInput
               streaming={streaming}
+              blocked={hitlPending}
               onSend={onSend}
-              onCancel={cancel}
+              onCancel={onCancel}
               hasAttachments={attachments.length > 0}
               topSlot={<AttachmentChips conversationID={id} />}
               leftActions={<AttachButton onClick={onPickFiles} />}

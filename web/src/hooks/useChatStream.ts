@@ -577,6 +577,11 @@ export function useChatStream(
   const [contextLimit, setContextLimit] = useState(0);
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
+  // True from mount until the reconnect probe has settled. `loading` clears
+  // earlier — the moment history is on screen — leaving a window where a run
+  // is very much alive on the server but `streaming` is still false. Anything
+  // that decides "is this conversation free" has to wait out that window.
+  const [reconnecting, setReconnecting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const onProjectBoundRef = useRef(opts?.onProjectBound);
@@ -800,6 +805,7 @@ export function useChatStream(
     let cancelled = false;
     setTurns([]);
     setLoading(true);
+    setReconnecting(true);
     setError(null);
 
     const controller = new AbortController();
@@ -813,6 +819,7 @@ export function useChatStream(
         console.error("[chat] load history failed:", err);
         setError(String(err));
         setLoading(false);
+        setReconnecting(false);
         return;
       }
       if (cancelled) return;
@@ -855,12 +862,20 @@ export function useChatStream(
       try {
         res = await resumeChat(conversationID, controller.signal);
       } catch (err) {
+        // Never clear the flag once cancelled: the effect has already re-run
+        // for a different conversation and re-armed it, and this stale
+        // closure would leave that one's probe window unguarded.
         if (cancelled || (err as { name?: string }).name === "AbortError")
           return;
         console.error("[chat] resume probe failed:", err);
+        setReconnecting(false);
         return;
       }
-      if (cancelled || !res) return;
+      if (cancelled) return;
+      if (!res) {
+        setReconnecting(false);
+        return;
+      }
 
       const existingTurn = [...initialTurns]
         .reverse()
@@ -897,6 +912,7 @@ export function useChatStream(
         setTurns((prev) => [...prev, assistantTurn]);
       }
       setStreaming(true);
+      setReconnecting(false);
       abortRef.current = controller;
       await runStreamingResponse(res, targetId, controller);
     })();
@@ -1087,6 +1103,7 @@ export function useChatStream(
     contextLimit,
     loading,
     streaming,
+    reconnecting,
     error,
     send,
     cancel,
