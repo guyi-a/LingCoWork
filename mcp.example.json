@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Copy to .lingcowork/mcp.json and edit. That path is gitignored because",
+    "this file holds API keys and Authorization headers.",
+    "改动保存后立即生效，不需要重启：只有变化的条目会被重连。",
+    "",
+    "Fields:",
+    "  command / args / env / cwd  - stdio server; the transport is inferred",
+    "  url / headers               - HTTP server (streamable HTTP, falls back to SSE)",
+    "  enabled                     - omit for enabled; set false to keep an entry without connecting",
+    "  trustAnnotations            - believe this server when it calls a tool read-only.",
+    "                                Off by default: annotations are self-reported, so an",
+    "                                untrusted server's read-only claim buys nothing.",
+    "  autoApprove                 - remote tool names (as the server publishes them, NOT the",
+    "                                prefixed name the model sees) to run without a prompt.",
+    "  initTimeoutSec              - handshake budget; raise it for a server that installs on first run",
+    "  auth                        - \"oauth\" runs the authorization code flow. HTTP servers only:",
+    "                                a stdio child process has nowhere to put a bearer token.",
+    "  oauth                       - optional. Omit the whole block for the usual case — the client",
+    "                                registers itself dynamically and the result is stored locally.",
+    "                                Tokens live in data/interview.db, never in this file.",
+    "    clientId / clientSecret   - only when you registered a client by hand",
+    "    scopes                    - what to ask for",
+    "    redirectUri               - defaults to http://localhost:9001/mcp/oauth/callback.",
+    "                                Override when the provider insists on 127.0.0.1, or when a",
+    "                                hand-registered client declared something else. Whatever you",
+    "                                put here must match the registration exactly."
+  ],
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "enabled": false,
+      "trustAnnotations": false,
+      "autoApprove": []
+    },
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp",
+      "enabled": false,
+      "trustAnnotations": true,
+      "autoApprove": ["read_wiki_structure"]
+    },
+    "internal-api": {
+      "url": "https://mcp.example.internal/mcp",
+      "headers": {
+        "Authorization": "Bearer REPLACE_ME"
+      },
+      "enabled": false,
+      "initTimeoutSec": 60
+    },
+    "oauth-service": {
+      "url": "https://mcp.example.com/mcp",
+      "auth": "oauth",
+      "oauth": {
+        "scopes": ["read"]
+      },
+      "enabled": false
+    }
+  }
+}

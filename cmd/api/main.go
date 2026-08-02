@@ -23,6 +23,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/config"
 	"github.com/guyi-a/Interview-Agent/internal/handler"
+	"github.com/guyi-a/Interview-Agent/internal/mcp"
 	ragembedding "github.com/guyi-a/Interview-Agent/internal/rag/embedding"
 	ragretriever "github.com/guyi-a/Interview-Agent/internal/rag/retriever"
 	ragstore "github.com/guyi-a/Interview-Agent/internal/rag/store"
@@ -144,7 +145,26 @@ func main() {
 		log.Fatalf("tools.Builtin: %v", err)
 	}
 
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects)
+	// MCP servers are optional and third-party, so nothing here is fatal: a
+	// misconfigured or unreachable server is recorded and skipped rather than
+	// taking the application down with it. Connect returns immediately and
+	// dials in the background — the supervisor reads its remote tools once
+	// per run, so a server that finishes connecting after boot is simply
+	// available from the next turn.
+	// The redirect URI is derived from addr rather than hardcoded, because an
+	// authorization server matches it byte for byte against what the client
+	// registered: the two drifting apart would break every re-authorization
+	// with an error pointing at the provider, not at us.
+	mcpAuth := mcp.NewAuthorizer(
+		mcp.NewDBCredentialStore(repository.NewMCPCredentialRepo(db)),
+		"http://localhost"+addr+"/mcp/oauth/callback",
+	)
+	mcpMgr := mcp.New(loadMCPConfig(), tools.BuiltinToolNames(), mcpAuth)
+	mcpMgr.SetEffectRegistry(effects)
+	mcpMgr.Connect(ctx)
+	defer mcpMgr.Close()
+
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -167,6 +187,7 @@ func main() {
 	convHandler := handler.NewConversationHandler(convService, contextLimit)
 	projectHandler := handler.NewProjectHandler(projectService)
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
+	mcpHandler := handler.NewMCPHandler(mcpMgr)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
@@ -175,6 +196,7 @@ func main() {
 	convHandler.Register(r)
 	projectHandler.Register(r)
 	workspaceHandler.Register(r)
+	mcpHandler.Register(r)
 	browserbridge.Register(r, bridgeSvc)
 
 	srv := &http.Server{Addr: addr, Handler: r}
@@ -201,6 +223,10 @@ func main() {
 	}
 
 	manager.ShutdownAll()
+	// Closing an MCP connection also reaps the stdio server's child process.
+	// Left to the deferred close, a hung HTTP shutdown would keep those
+	// processes alive for the whole grace period.
+	mcpMgr.Close()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -247,6 +273,26 @@ func buildRAGRetriever(cfg *config.Config) ragretriever.Retriever {
 // buildSearchService 构造联网搜索的 Service。没配任何 Tavily/Bocha key 就
 // 返 nil，tools.Builtin 因此跳过 web_search 工具注册 —— agent 感知不到"联网
 // 搜索"能力。web_fetch 独立注册，不依赖 key。
+// loadMCPConfig reads the MCP server list, never failing the boot.
+//
+// An unreadable or malformed config means no MCP servers, which is the same
+// state as not having configured any. Refusing to start the application over
+// a broken optional integration would be the wrong trade.
+func loadMCPConfig() *mcp.Config {
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		log.Printf("mcp: %v; continuing with no MCP servers", err)
+		return &mcp.Config{}
+	}
+	switch {
+	case !cfg.Exists:
+		log.Printf("mcp: no config at %s; no MCP servers", cfg.Path)
+	default:
+		log.Printf("mcp: %d server(s) configured in %s", len(cfg.Servers), cfg.Path)
+	}
+	return cfg
+}
+
 func buildSearchService(cfg *config.Config) *websearch.Service {
 	if !cfg.Search.Enabled() {
 		log.Printf("websearch: TAVILY_API_KEY / BOCHA_API_KEY 均未配置，web_search 工具未启用")

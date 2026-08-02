@@ -39,6 +39,10 @@ logs/
 .env.local
 .env.*.local
 
+# MCP server config — holds API keys and Authorization headers.
+# mcp.example.json is the committed template.
+.lingcowork/
+
 # Test coverage
 coverage/
 .coverage

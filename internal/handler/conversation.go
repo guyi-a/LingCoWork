@@ -258,17 +258,27 @@ func foldMessages(msgs []model.Message) []messageItem {
 			}
 			ok := true
 			errMsg := ""
+			cancelled := false
 			if m.Extra != "" {
 				var p struct {
-					OK    *bool  `json:"ok"`
-					Error string `json:"error"`
+					OK        *bool  `json:"ok"`
+					Error     string `json:"error"`
+					Cancelled bool   `json:"cancelled"`
 				}
 				if json.Unmarshal([]byte(m.Extra), &p) == nil {
 					if p.OK != nil {
 						ok = *p.OK
 					}
 					errMsg = p.Error
+					cancelled = p.Cancelled
 				}
+			}
+			// Rows written before the flag existed carry the cancellation
+			// only in their body. Re-deriving it here rather than in the
+			// frontend keeps one recogniser for both, and this one matches
+			// our envelope shapes instead of searching for a word.
+			if !cancelled {
+				cancelled = stream.IsCanceledResult(m.Content)
 			}
 			prev := &out[lastAssistantIdx]
 			if len(prev.Segments) == 0 {
@@ -287,10 +297,17 @@ func foldMessages(msgs []model.Message) []messageItem {
 						continue
 					}
 					t.OK = boolPtr(ok)
-					if ok {
+					switch {
+					case cancelled:
+						// Ahead of ok: a denial returns successfully, and a
+						// back-filled placeholder returns as a failure. Both
+						// are the same thing to a reader.
+						t.Status = "cancelled"
+						t.Content = m.Content
+					case ok:
 						t.Status = "ok"
 						t.Content = m.Content
-					} else {
+					default:
 						t.Status = "error"
 						t.Error = errMsg
 						if t.Error == "" {
@@ -305,12 +322,16 @@ func foldMessages(msgs []model.Message) []messageItem {
 				}
 			}
 			if !merged {
+				status := statusFromOK(ok)
+				if cancelled {
+					status = "cancelled"
+				}
 				last := &prev.Segments[len(prev.Segments)-1]
 				last.Tools = append(last.Tools, toolEventItem{
 					ID:      m.ToolCallID,
 					Name:    m.ToolName,
 					OK:      boolPtr(ok),
-					Status:  statusFromOK(ok),
+					Status:  status,
 					Content: m.Content,
 					Error:   errMsg,
 				})

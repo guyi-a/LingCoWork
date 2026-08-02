@@ -47,6 +47,18 @@ type Frame struct {
 	OK       *bool  `json:"ok,omitempty"`        // tool_result success flag (pointer so we can emit even when false)
 	Error    string `json:"error,omitempty"`     // tool_result(ok=false) error message
 
+	// Cancelled marks a tool_result that exists only because the call was
+	// stopped — the user denied it, or the run was cancelled out from under
+	// it. Orthogonal to OK: a denial is a successful return of a "you may
+	// not" payload, so OK is true and only this field distinguishes it.
+	//
+	// It exists because the frontend used to infer this by searching the
+	// result text for "cancel", which is a control signal read out of
+	// arbitrary content. That held only while every tool was ours; an MCP
+	// server handing back a page of documentation that happens to mention
+	// context cancellation was enough to mislabel a perfectly good call.
+	Cancelled bool `json:"cancelled,omitempty"`
+
 	// Project bound (emitted by create_workspace tool, not by this handler)
 	ProjectID     string `json:"project_id,omitempty"`
 	ProjectName   string `json:"project_name,omitempty"`
@@ -134,6 +146,9 @@ type ToolResultRecord struct {
 	OK      bool   `json:"ok"`
 	Content string `json:"content,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Cancelled mirrors Frame.Cancelled so a reload renders the same label
+	// the live stream did.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 // AssistantTurnRecord is the persisted portion of a single root-agent

@@ -533,14 +533,21 @@ func (s *ChatService) persistRun(convID string, collector *stream.RunCollector, 
 				ToolCallID:     tr.CallID,
 				ToolName:       tr.Name,
 			}
-			// Extra encodes ok/error precisely for the UI fold path so the
-			// frontend can render red-state cards without parsing Content.
-			// Successes skip Extra entirely (nil ≡ ok:true default in the
-			// handler-side fold).
-			if !tr.OK {
-				payload := map[string]any{"ok": false}
+			// Extra encodes ok/error/cancelled precisely for the UI fold path
+			// so the frontend can render the right card without parsing
+			// Content. Plain successes skip Extra entirely (nil ≡ ok:true
+			// default in the handler-side fold).
+			//
+			// A denial is a success that still has to be written out: it
+			// returns ok=true, so Cancelled is the only thing separating it
+			// from a normal result.
+			if !tr.OK || tr.Cancelled {
+				payload := map[string]any{"ok": tr.OK}
 				if tr.Error != "" {
 					payload["error"] = tr.Error
+				}
+				if tr.Cancelled {
+					payload["cancelled"] = true
 				}
 				if b, jerr := json.Marshal(payload); jerr == nil {
 					toolRow.Extra = string(b)
@@ -570,11 +577,12 @@ func padMissingToolResults(t stream.TurnRecord) stream.TurnRecord {
 	for _, tc := range t.Assistant.ToolCalls {
 		if !seen[tc.ID] {
 			out.ToolResults = append(out.ToolResults, stream.ToolResultRecord{
-				CallID:  tc.ID,
-				Name:    tc.Name,
-				OK:      false,
-				Content: "[canceled] tool did not run",
-				Error:   "canceled",
+				CallID:    tc.ID,
+				Name:      tc.Name,
+				OK:        false,
+				Content:   stream.CanceledPlaceholderPrefix + " tool did not run",
+				Error:     "canceled",
+				Cancelled: true,
 			})
 		}
 	}

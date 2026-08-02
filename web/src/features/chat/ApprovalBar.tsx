@@ -35,6 +35,7 @@ const EFFECT_TITLES: Record<string, string> = {
   "network-request": "访问网络",
   "skill-load": "加载技能",
   "readonly-query": "只读查询",
+  "mcp-call": "调用外部服务",
   unknown: "未知操作",
 };
 
@@ -55,6 +56,14 @@ type Effect = {
   url?: string;
   agent?: string;
   note?: string;
+  // mcp-call
+  server?: string;
+  remote_tool?: string;
+  transport?: string;
+  read_only?: boolean;
+  open_world?: boolean;
+  trust_annotations?: boolean;
+  auto_approved?: boolean;
 };
 
 const REASON_MAX = 500;
@@ -84,6 +93,10 @@ function summarizeEffect(e: Effect): string {
     }
     case "skill-load":
       return e.note ?? "";
+    case "mcp-call":
+      // The remote name is what the server documents and what a user would
+      // look up; the prefixed name in the title is our invention.
+      return `${e.server ?? "?"} · ${e.remote_tool ?? "?"}`;
     default:
       return scopeTag(e.path, e.scope) || e.note || "";
   }
@@ -172,6 +185,9 @@ function toolTitle(tool: string, effect: Effect | null): string {
   const known = TOOL_TITLES[tool];
   if (known) return known;
   if (effect?.kind === "delegate-agent") return `委派 ${effect.agent ?? tool}`;
+  if (effect?.kind === "mcp-call") {
+    return `调用外部工具 ${effect.remote_tool ?? tool}`;
+  }
   const byKind = effect?.kind ? EFFECT_TITLES[effect.kind] : undefined;
   return byKind ? `${byKind} · ${tool}` : tool;
 }
@@ -276,6 +292,14 @@ export function ApprovalBar({
                 未知工具
               </span>
             )}
+            {/* An MCP call runs on someone else's machine and the only account
+                of what it does is that machine's own. Saying so is the point
+                of the card — without it the user is approving a name. */}
+            {effect?.kind === "mcp-call" && !effect.trust_annotations && (
+              <span className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700">
+                未信任的服务器
+              </span>
+            )}
             {pending.length > 1 && (
               <span className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-muted tabular-nums">
                 1/{pending.length}
@@ -289,6 +313,12 @@ export function ApprovalBar({
                 <code className="block min-h-9 w-full overflow-hidden truncate rounded-lg bg-subtle/65 px-3 py-2 font-mono text-[12px] leading-5 text-muted">
                   {summary}
                 </code>
+              )}
+
+              {effect?.kind === "mcp-call" && effect.note && (
+                <p className="px-0.5 text-[12px] leading-5 text-muted">
+                  {effect.note}
+                </p>
               )}
 
               <div className="flex items-center justify-center gap-2.5">

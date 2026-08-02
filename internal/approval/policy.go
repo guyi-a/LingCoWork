@@ -30,6 +30,23 @@ func MustAsk(e effect.Effect) (bool, string) {
 		return true, reason
 	}
 	if e.Destructive {
+		// One exception, and only this one: the user named this exact tool
+		// in a server's autoApprove list. That is the same decision the wall
+		// exists to collect, taken deliberately and in advance.
+		//
+		// Without it the wall is unusable against MCP. The spec's default for
+		// destructiveHint is true, and mcp-go stamps that default onto every
+		// tool built with its helper, so a Go-based server typically declares
+		// its entire tool set destructive without anyone having decided that.
+		// A permanent prompt on every call, unskippable even in full_access
+		// and with no way to say otherwise, is how a safety feature gets
+		// clicked through on reflex.
+		//
+		// Nothing a server sends can set AutoApproved; it comes only from the
+		// local config file.
+		if e.AutoApproved {
+			return false, ""
+		}
 		return true, "irreversible operation"
 	}
 	if e.Classification == effect.Destructive {
@@ -72,6 +89,32 @@ func NeedsApproval(e effect.Effect) bool {
 
 	case effect.KindFileWrite, effect.KindFileTransfer, effect.KindProcessExec:
 		return true
+
+	// An MCP tool is a black box. "Read-only" is the server's own word for
+	// itself and anyone can say it, so it buys nothing until the user has
+	// vouched for that server; naming the tool in autoApprove is the user
+	// saying it directly and needs no corroboration.
+	//
+	// A server can declare a tool both read-only and destructive, and that is
+	// not a hypothetical: mcp-go stamps destructiveHint onto every tool built
+	// with its helper, so an author who sets readOnlyHint by hand produces
+	// exactly this pair. Destructive wins, and only autoApprove overrides it
+	// — the same rule MustAsk applies. Repeating it here rather than leaning
+	// on MustAsk running first is the point: this function is documented as a
+	// pure function of the effect, and one that answers "no approval needed"
+	// for a self-declared destructive call is a landmine for whoever next
+	// reorders the middleware.
+	//
+	// OpenWorld is recorded on the effect but deliberately not consulted.
+	// KindNetwork above returns false, meaning web_search and web_fetch —
+	// read-only calls to the open internet — already run unprompted. Holding
+	// a server the user explicitly trusted to a stricter standard than our
+	// own search tool would not be defensible.
+	case effect.KindMCPCall:
+		if e.AutoApproved {
+			return false
+		}
+		return !(e.ReadOnly && e.TrustAnnotations && !e.Destructive)
 
 	// Includes KindUnknown, which MustAsk has normally already caught. Any
 	// kind added later lands here too: a new consequence is gated until

@@ -276,6 +276,27 @@ func denialMessage(toolName, reason string) string {
 
 **这条 tool_result 塞回 iter 继续跑** → LLM 下一轮 ReAct 里看到 `{"canceled": true, "instruction": "..."}` → 大概率能理解"这一步不能做，改路"。
 
+### 这个 payload 曾经被当成 UI 的信号来源（一个带口子的设计）
+
+denial 是"成功返回了一段拒绝文案"，所以它走的是 `ok=true` 的路径 —— 跟一次正常调用在协议上完全没区别。前端要把它画成"已取消"而不是"已完成"，早期的做法是**在结果文本里搜 `cancel`**：
+
+```ts
+// 老代码，已删
+const value = `${content}\n${error}`.toLowerCase();
+return value.includes("canceled") || value.includes("cancelled") || ...
+```
+
+这是**把控制信号从任意内容里读出来**。在所有工具都是自己写的、输出都很短的时候它一直是对的；接上 MCP 之后就崩了 —— 一个 MCP server 返回的文档里只要提到 "the request was cancelled"，这次明明跑成功的调用就被标成取消。
+
+修法不是把子串匹配写得更聪明，而是**把信号搬出内容**：
+
+- `stream.Frame` / `ToolResultRecord` 加一个跟 `OK` 正交的 `Cancelled` 字段（denial 是 `ok=true, cancelled=true`；run 被 cancel 后补的占位 row 是 `ok=false, cancelled=true`）
+- 识别只在后端做一次 —— `stream.IsCanceledResult` 精确匹配我们自己产的两种信封：**顶层** `canceled: true` 的 JSON 对象，或 `[canceled]` 前缀。第三方工具要撞上得原样构造出这个结构，而不是碰巧提到某个词
+- 落库时写进 tool row 的 `Extra`，fold 时翻成 `status: "cancelled"`；老数据没这个字段，fold 里对 Content 再跑一次同一个识别函数兜底
+- 前端一个字都不再猜，只读 `cancelled` / `status`
+
+**面试点**：in-band signaling 的经典代价 —— 数据通道和控制通道共用一条线，只要数据的取值范围一扩大（这里就是"接入了第三方工具"），控制信号就开始误触发。带外一个 bool 字段就没这个问题。
+
 ---
 
 ## PendingStore 的持久化（重启不丢）
@@ -346,6 +367,69 @@ if rows, err := pendingApprovalRepo.ListAll(ctx); err != nil {
 - `docker push` / `npm publish` / `git push --force`
 
 破坏性 gate 走 `decisionInterrupt`（还是要人审），但**在 mode 检查之前**触发。
+
+---
+
+## MCP 工具：非对称信任
+
+MCP 工具跑在别人机器上，它到底干什么只有服务器自己说了算。所以 effect 不假装知道结果，只记录**声明**和**谁做的声明**，由策略决定这条声明值多少。
+
+三方声明分开存（[internal/effect/effect.go](../../internal/effect/effect.go)），因为审批卡片必须说得清是谁在担保：
+
+| 字段 | 谁说的 | 含义 |
+|---|---|---|
+| `read_only` / `open_world` / `destructive` | 服务器自己 | 工具注解（`readOnlyHint` 等） |
+| `trust_annotations` | 用户，针对整个服务器 | 配置里 `trustAnnotations: true` |
+| `auto_approved` | 用户，针对单个工具 | 配置里把工具名写进 `autoApprove` |
+
+**信任是非对称的**：
+
+- 服务器说"我是破坏性的" → **立刻采信**。往这个方向说谎没有动机，判错了代价只是多问一次。
+- 服务器说"我是只读的" → **要用户背书才算数**。这是攻击者会说谎的方向，MCP spec 也明确要求客户端不得信任未验证服务器的注解。
+
+策略落在 `NeedsApproval` 的 `KindMCPCall` 分支：`!(AutoApproved || (ReadOnly && TrustAnnotations))`。
+
+**`autoApprove` 是唯一能翻过破坏性墙的东西**。这不是开后门：mcp-go 的 `NewTool` 把 `destructiveHint` 默认成 true，一个 Go 写的服务器往往整套工具都自称破坏性，而没人真的做过这个决定。如果不留这个口子，这类服务器每次调用都弹一个连 `full_access` 都跳不过、也没有任何办法关掉的窗——安全提示被条件反射点掉就是这么来的。而 `AutoApproved` 只能来自本地配置文件，服务器发什么都改不了它。
+
+`open_world` 记在 effect 上但策略不看：`web_search` / `web_fetch` 这些对公网的只读调用本来就不弹窗（`KindNetwork` 返回 false），对用户明确信任过的服务器反而更严，说不通。它的用处是给 classifier 和卡片做判断材料。
+
+---
+
+## 连接器生命周期：为什么工具表必须是活的
+
+上面那套 effect 是**运行时注册**的——服务器连上才知道它有哪些工具，也才知道每个工具的注解。这就要求两件原本不成立的事。
+
+### 1. `effect.Registry` 要能并发写
+
+它原来是个裸 map，注释写着"agent 装配后不得再 Register"。现在一次 `Apply` 或一次 OAuth 授权就会在会话跑到一半时增删 deriver，所以加了 `RWMutex` 和 `Unregister`。
+
+`Unregister` 不是为了省内存。工具名是 `{服务器 slug}__{远端工具名}` 拼出来的，一个服务器下线后如果 deriver 还在，下一个占到同名的服务器就会**继承前一个服务器的 effect**——包括用户当初只给前者的 `trustAnnotations`。撤掉之后它落回 `KindUnknown`，也就是"一律问人"。
+
+`Derive` 只在取 deriver 时持读锁，调用 deriver 本身在锁外：deriver 会解析参数、resolve 路径，把这段圈进锁里等于让一次慢派生卡住所有重连。
+
+### 2. 工具表不能在 agent 第一次运行时冻结
+
+eino 的 `ChatModelAgent` 用 `sync.Once` 把工具表和 `toolInfos` 定型在第一次 run。但只要 agent 挂了 handler，每轮都会从那份基准表**复制一份** `runCtx.Tools` 交给 `BeforeAgent`，改完重跑 `genToolInfos`，再用 `compose.WithToolList` 覆盖 ToolsNode 的派发表。
+
+所以 MCP 工具走 `runtimectx.DynamicToolsMiddleware`，不进构造参数（进了会每轮重复追加，因为基准表本来就每轮重新复制）。中途上线的服务器，下一轮模型就看得见也调得到，不用重建 agent 树，checkpoint 也不会对不上。
+
+**这不是为了少按一次重启键。** OAuth 授权是交互式的：用户点「授权」时应用早就在跑了，重启在时间上根本不可能是答案。有了这条路径，改配置免重启就是同一份代码顺带的。
+
+### 3. 状态机
+
+`connecting` / `connected` / `needs_auth` / `disabled` / `error`。启动时 `Connect` 只是把每个服务器标成 `connecting` 然后开 goroutine，不等握手——否则一个首次运行要 `npx` 下载包的服务器会把 HTTP 监听拖住整个超时。
+
+拨号和列工具都在锁外做：`Tools()` 每轮 agent run 都会调，握手期间持写锁等于让一个连不上的服务器卡住所有对话。装回去时用 `serverState.gen` 对一次账——授权回调触发的重连和一次保存配置可能同时在拨同一个服务器，代次对不上的那个把连接扔掉。
+
+`Apply` 按条目内容哈希做 diff，只动变了的。stdio 服务器是子进程，为一条不相干的编辑把它全体重启，代价是几秒的空窗。
+
+### 4. OAuth 的三个坑
+
+**授权用我们自己的 handler，不复用 transport 里那个。** `NewOAuthStreamableHttpClient` 内部造的 handler 拿不到引用，只能从错误里掏；但用户可能对一个从没连上过的服务器点授权。所以自己 `NewOAuthHandler` + `SetBaseURL`，和 PKCE verifier 一起存进 pending 表。两个 handler 共享同一个 `TokenStore`，谁拿到 token 另一个都看得见。
+
+**动态注册的结果必须落盘。** `RegisterClient` 只改 handler 自己那份 config 副本。不存的话每次重启都会去 provider 那儿注册一个新客户端，留一地孤儿注册，用户每次还要重新同意一遍。
+
+**401 不会自动刷新。** mcp-go 只在本地判定 token 过期时才刷新；服务端提前吊销或轮换密钥就直接是 `OAuthAuthorizationRequiredError`。所以 `remoteTool.InvokableRun` 命中这个错误时主动刷一次再重试，**只重试一次**——新签发的 token 也被拒说明授权已经没了，再打只是消耗用户的额度。
 
 ---
 

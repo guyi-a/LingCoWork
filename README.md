@@ -22,7 +22,10 @@
   - OCR：`ocr_collector`
 - **Skills**（`internal/agent/skills`）— docx / pdf / pptx / bosszp / browser-bridge / browser-use，按需加载，避免主 prompt 膨胀。
 - **RAG 层** — chunker → embedding → indexer → retriever → sqlite 向量存储；离线索引用 `cmd/rag-index`，命令行检索用 `cmd/rag-search`。默认嵌入模型走阿里云 DashScope OpenAI-兼容接口，可替换为任意 `/embeddings` 端点。
-- **审批 / HITL** — `internal/effect` + `internal/approval` + `internal/hitl`：每个工具声明自己的调用后果（effect），审批策略是这份后果的纯函数，未知 effect 一律问人——这样接入 MCP 第三方工具时不会因为"没见过这个名字"而被静默放行。`APPROVAL_FAST_MODEL`（默认 DeepSeek Chat）作为快速分类器决定是否走 auto 模式。
+- **MCP 客户端**（`internal/mcp`）— 接入第三方 MCP 服务器（stdio 与 streamable HTTP / SSE），远端工具改名后加进 supervisor 的工具表，走同一套 effect + 审批。配置在 `.lingcowork/mcp.json`（Claude Desktop 同构 schema，见 [`mcp.example.json`](mcp.example.json)），前端 `/settings/connectors` 可查看状态、测连接、改配置、跑 OAuth 授权。
+  - **连接是活的**：服务器随时增删改，改完立即生效，不需要重启。这不是锦上添花——OAuth 授权本身就是交互式的，用户点「授权」的那一刻应用早就在跑了，重启不可能是答案。supervisor 通过 `DynamicToolsMiddleware` 每轮重读工具表（eino 每次 run 会从冻结的基准表复制一份交给 `BeforeAgent` 改），所以中途上线的服务器下一轮就能被模型调用。
+  - **OAuth**：授权码 + PKCE + 动态客户端注册。token 和注册下来的 client id 存在 `data/interview.db`（0600），不在配置文件里；回调走 `http://localhost:9001/mcp/oauth/callback`。调用中途 token 被服务端吊销会自动刷新重试一次，仍失败才把服务器标成待授权。
+- **审批 / HITL** — `internal/effect` + `internal/approval` + `internal/hitl`：每个工具声明自己的调用后果（effect），审批策略是这份后果的纯函数，未知 effect 一律问人——所以 MCP 第三方工具不会因为"没见过这个名字"而被静默放行。对 MCP 的信任是非对称的：服务器自称破坏性立刻采信，自称只读要用户先在配置里 `trustAnnotations` 背书才算数。`APPROVAL_FAST_MODEL`（默认 DeepSeek Chat）作为快速分类器决定是否走 auto 模式。
 - **工作区隔离** — 每个会话都有独立的 `.workspace/<id>/`，工具的路径都在里面 resolve，防止越界。
 - **前端**（`web/`）— React 19 + Vite + Tailwind + Zustand + Streamdown（Markdown 流式渲染）+ Shiki + KaTeX，附带 docx / pptx 预览器。
 - **桌面壳**（`electron/`）— 只在 dev 期加载 Vite `:5173`，不负责起后端；纯壳。
@@ -52,7 +55,8 @@
 │   ├── compaction/   # 跨轮次上下文压缩
 │   ├── llmhttp/      # 极简 OpenAI 兼容客户端（分类器 / 摘要器共用）
 │   ├── hitl/         # 人工介入 (ask_user)
-│   ├── handler/      # HTTP handler (chat / conversation / project / workspace / approval)
+│   ├── handler/      # HTTP handler (chat / conversation / project / workspace / approval / mcp)
+│   ├── mcp/          # MCP 客户端：连接生命周期、OAuth、工具改名、结果拍平、effect 派生
 │   ├── rag/          # chunker · embedding · indexer · retriever · store · vector
 │   ├── repository/   # GORM 仓库
 │   ├── service/      # 领域服务

@@ -103,6 +103,84 @@ func TestFoldMessages_HITLEmptyAssistantDoesNotDuplicateTools(t *testing.T) {
 	}
 }
 
+// A denial returns successfully — the approval middleware answers its own
+// payload — so `ok` alone can't distinguish it from a call that ran. Reload
+// has to show the same "cancelled" the live stream did, not "done".
+func TestFoldMessages_DenialFoldsToCancelled(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{
+		{Seq: 1, Role: "user", Content: "delete it", CreatedAt: now},
+		{
+			Seq:       2,
+			Role:      "assistant",
+			ToolCalls: `[{"id":"c1","name":"run_command","args_json":"{}"}]`,
+			CreatedAt: now,
+		},
+		{
+			Seq:        3,
+			Role:       "tool",
+			ToolCallID: "c1",
+			ToolName:   "run_command",
+			Content:    `{"canceled":true,"tool":"run_command"}`,
+			Extra:      `{"ok":true,"cancelled":true}`,
+			CreatedAt:  now,
+		},
+	}
+	out := foldMessages(msgs)
+	tools := out[1].Segments[0].Tools
+	if len(tools) != 1 || tools[0].Status != "cancelled" {
+		t.Fatalf("tools=%+v want one cancelled card", tools)
+	}
+}
+
+// Rows written before the flag existed carry the cancellation only in their
+// body, and still have to read as cancelled.
+func TestFoldMessages_LegacyCancellationWithoutFlag(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{
+		{Seq: 1, Role: "user", Content: "delete it", CreatedAt: now},
+		{
+			Seq:       2,
+			Role:      "assistant",
+			ToolCalls: `[{"id":"c1","name":"run_command","args_json":"{}"},{"id":"c2","name":"web_search","args_json":"{}"}]`,
+			CreatedAt: now,
+		},
+		{
+			Seq:        3,
+			Role:       "tool",
+			ToolCallID: "c1",
+			ToolName:   "run_command",
+			Content:    "[canceled] tool did not run",
+			Extra:      `{"ok":false,"error":"canceled"}`,
+			CreatedAt:  now,
+		},
+		// The false positive the old substring rule produced: a call that ran
+		// and returned prose about cancellation.
+		{
+			Seq:        4,
+			Role:       "tool",
+			ToolCallID: "c2",
+			ToolName:   "web_search",
+			Content:    "Upstream cancelled the first attempt; the retry returned 3 results.",
+			Extra:      `{"ok":true}`,
+			CreatedAt:  now,
+		},
+	}
+	out := foldMessages(msgs)
+	byID := map[string]string{}
+	for _, seg := range out[1].Segments {
+		for _, tool := range seg.Tools {
+			byID[tool.ID] = tool.Status
+		}
+	}
+	if byID["c1"] != "cancelled" {
+		t.Errorf("c1 status=%q want cancelled", byID["c1"])
+	}
+	if byID["c2"] != "ok" {
+		t.Errorf("c2 status=%q want ok", byID["c2"])
+	}
+}
+
 func TestInsertCompactionMarker_LandsAtFoldPoint(t *testing.T) {
 	now := time.Now()
 	msgs := []model.Message{

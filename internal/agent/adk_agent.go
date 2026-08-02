@@ -50,10 +50,24 @@ type ADKBundle struct {
 // adk_handler 会把它们翻译成带 agent 字段的 SSE 帧，UI 展示 deep_research
 // 在干嘛，持久化时塞进 message.Extra.sub_events 数组（带
 // parent_tool_call_id 链接回 root 的 deep_research 工具卡片）。
+// dynamicTools supplies tools that only the root agent gets and that may not
+// exist yet when this runs. MCP is both:
+//
+// Only the root agent, because a remote server's tool set is unbounded and
+// unrelated to what a sub-agent was built to do — handing job_search a
+// filesystem server would grow every sub-agent's prompt with tools none of
+// them were designed around. The approval gate would still hold, so this is
+// about exposure and context cost rather than a hole.
+//
+// Not yet existing, because an MCP server can come up long after boot: OAuth
+// authorization is interactive, and the user clicks "authorize" while the app
+// is already running. A slice captured here would be frozen on the agent's
+// first run; a function is read every run. See DynamicToolsMiddleware.
 func NewInterviewADKAgent(
 	ctx context.Context,
 	cm model.ToolCallingChatModel,
 	baseTools []tool.BaseTool,
+	dynamicTools func(context.Context) []tool.BaseTool,
 	skillLoader *skills.Loader,
 	checkpointRepo *repository.CheckpointRepo,
 	convRepo *repository.ConversationRepo,
@@ -95,6 +109,9 @@ func NewInterviewADKAgent(
 	// 所有 sub-agent 共用同一个实例（无状态），保证主 agent 和 sub-agent 看到的
 	// workspace 视图一致。
 	workspaceMW := runtimectx.NewWorkspaceMiddleware(convRepo, projectRepo)
+
+	// Only the supervisor gets this one — see the dynamicTools doc above.
+	dynamicToolsMW := runtimectx.NewDynamicToolsMiddleware(dynamicTools)
 
 	// 1) 后台研究员
 	//    - 不带 Backend：继续用我们自己的 workspace/fs 工具（baseTools），不引入 ADK 原生 filesystem
@@ -200,7 +217,8 @@ func NewInterviewADKAgent(
 	}
 	plannerTool := adk.NewAgentTool(ctx, plannerAgent)
 
-	// 6) Supervisor 工具列表 = baseTools + 4 个 sub-agent tool
+	// 6) Supervisor 工具列表 = baseTools + 4 个 sub-agent tool。
+	// MCP 工具不在这里，每轮由 dynamicToolsMW 注入。
 	supervisorTools := make([]tool.BaseTool, 0, len(baseTools)+4)
 	supervisorTools = append(supervisorTools, baseTools...)
 	supervisorTools = append(supervisorTools, deepTool, jobTool, resumeTool, plannerTool)
@@ -222,7 +240,7 @@ func NewInterviewADKAgent(
 			// Runner's iter so the UI can show real-time progress.
 			EmitInternalEvents: true,
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW, dynamicToolsMW},
 		MaxIterations: 50,
 	})
 	if err != nil {

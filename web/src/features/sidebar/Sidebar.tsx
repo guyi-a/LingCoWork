@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
 import { ConversationItem } from "./ConversationItem";
@@ -119,7 +119,48 @@ export function Sidebar() {
           </div>
         </nav>
       )}
+
+      <footer className="shrink-0 border-t border-rule/60 p-2">
+        <NavLink
+          to="/settings/connectors"
+          title="连接器"
+          className={({ isActive }) =>
+            [
+              "flex h-10 items-center rounded-xl text-[14px] transition-colors hover:bg-rule/70 hover:text-ink",
+              collapsed ? "justify-center" : "gap-3 px-3",
+              isActive ? "text-ink" : "text-muted",
+            ].join(" ")
+          }
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <PlugIcon />
+          </span>
+          {!collapsed && <span className="truncate">连接器</span>}
+        </NavLink>
+      </footer>
     </aside>
+  );
+}
+
+function PlugIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <path d="M9 2v6" />
+      <path d="M15 2v6" />
+      <path d="M6 8h12v3a6 6 0 0 1-12 0V8z" />
+      <path d="M12 17v5" />
+    </svg>
   );
 }
 

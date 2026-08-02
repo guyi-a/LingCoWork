@@ -492,6 +492,11 @@ func emitToolResult(
 		return
 	}
 
+	// A denial comes back through this path looking like any other success:
+	// the approval middleware answers its own payload instead of calling the
+	// tool. Classifying it here is what keeps the guesswork out of the UI.
+	cancelled := IsCanceledResult(msg.Content)
+
 	buf.Append(Encode(Frame{
 		Type:             "tool_result",
 		Agent:            agentField,
@@ -500,15 +505,17 @@ func emitToolResult(
 		Name:             name,
 		OK:               boolPtr(true),
 		Content:          msg.Content,
+		Cancelled:        cancelled,
 	}))
 	if collector != nil {
 		if isRoot {
 			collector.finishTool(msg.ToolCallID, true, msg.Content, "")
 			collector.AttachToolResult(ToolResultRecord{
-				CallID:  msg.ToolCallID,
-				Name:    name,
-				OK:      true,
-				Content: msg.Content,
+				CallID:    msg.ToolCallID,
+				Name:      name,
+				OK:        true,
+				Content:   msg.Content,
+				Cancelled: cancelled,
 			})
 			router.noteRootToolResult(msg.ToolCallID)
 		} else {

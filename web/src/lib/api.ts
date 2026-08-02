@@ -297,6 +297,108 @@ export async function setApprovalMode(
   }
 }
 
+export type MCPServerState =
+  | "connecting"
+  | "connected"
+  | "disabled"
+  | "needs_auth"
+  | "error";
+
+export type MCPServerStatus = {
+  name: string;
+  transport: "stdio" | "http";
+  target: string;
+  state: MCPServerState;
+  tool_count: number;
+  tools?: string[];
+  error?: string;
+  stderr?: string;
+  trusted: boolean;
+  auto_approve?: string[];
+  oauth: boolean;
+  authorized: boolean;
+};
+
+export type MCPIssue = { server: string; message: string };
+
+export type MCPServersResponse = {
+  servers: MCPServerStatus[];
+  issues: MCPIssue[] | null;
+  config_path: string;
+};
+
+export async function listMCPServers(): Promise<MCPServersResponse> {
+  const res = await fetch(`${API_BASE}/mcp/servers`);
+  if (!res.ok) throw new Error(`listMCPServers: ${res.status}`);
+  return (await res.json()) as MCPServersResponse;
+}
+
+export type MCPTestResult = {
+  ok: boolean;
+  needs_auth?: boolean;
+  tool_count: number;
+  tools?: string[];
+  error?: string;
+};
+
+export async function testMCPServer(name: string): Promise<MCPTestResult> {
+  const res = await fetch(
+    `${API_BASE}/mcp/servers/${encodeURIComponent(name)}/test`,
+    { method: "POST" },
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? `testMCPServer: ${res.status}`);
+  return data as MCPTestResult;
+}
+
+export type MCPConfigDoc = { path: string; exists: boolean; content: string };
+
+export async function getMCPConfig(): Promise<MCPConfigDoc> {
+  const res = await fetch(`${API_BASE}/mcp/config`);
+  if (!res.ok) throw new Error(`getMCPConfig: ${res.status}`);
+  return (await res.json()) as MCPConfigDoc;
+}
+
+export async function saveMCPConfig(
+  content: string,
+): Promise<{ issues: MCPIssue[] | null }> {
+  const res = await fetch(`${API_BASE}/mcp/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? `saveMCPConfig: ${res.status}`);
+  return data as { issues: MCPIssue[] | null };
+}
+
+// authorizeMCPServer returns the URL the user must visit. The caller opens it
+// in a real browser window: the flow needs the provider's existing session
+// cookies and often a platform passkey prompt, and an iframe gets neither.
+export async function authorizeMCPServer(name: string): Promise<string> {
+  const res = await fetch(
+    `${API_BASE}/mcp/servers/${encodeURIComponent(name)}/authorize`,
+    { method: "POST" },
+  );
+  const data = await res.json();
+  if (!res.ok)
+    throw new Error(data?.error ?? `authorizeMCPServer: ${res.status}`);
+  return data.auth_url as string;
+}
+
+// deleteMCPServer removes the entry from the config file, drops the
+// connection and forgets any OAuth token. The config file on disk changes, so
+// callers holding its text must reload it.
+export async function deleteMCPServer(name: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/mcp/servers/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (res.ok) return;
+  const data = await res.json().catch(() => null);
+  throw new Error(data?.error ?? `deleteMCPServer: ${res.status}`);
+}
+
 export type WorkspaceTreeEntry = {
   path: string;
   name: string;

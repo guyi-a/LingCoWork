@@ -5,6 +5,7 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 import { App } from "@/App";
 import { Home } from "@/routes/home";
 import { Conversation } from "@/routes/conversation";
+import { Connectors } from "@/routes/connectors";
 
 const router = createBrowserRouter([
   {
@@ -13,6 +14,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, Component: Home },
       { path: "c/:id", Component: Conversation },
+      { path: "settings/connectors", Component: Connectors },
     ],
   },
 ]);

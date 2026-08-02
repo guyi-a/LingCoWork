@@ -101,6 +101,9 @@ type Frame = {
   args_json?: string;
   ok?: boolean;
   error?: string;
+  // tool_result — the call was denied or the run was cancelled. Orthogonal to
+  // `ok`: a denial returns successfully with a "you may not" payload.
+  cancelled?: boolean;
   // Project (PR B, ignored for now if it ever shows up early)
   project_id?: string;
   project_name?: string;
@@ -174,17 +177,6 @@ function parseFrames(buffer: string): { frames: Frame[]; rest: string } {
   return { frames, rest };
 }
 
-function isCancelledToolResult(content?: string, error?: string): boolean {
-  const value = `${content ?? ""}\n${error ?? ""}`.toLowerCase();
-  return (
-    value.includes("用户拒绝执行") ||
-    value.includes("[canceled]") ||
-    value.includes("[cancelled]") ||
-    value.includes("canceled") ||
-    value.includes("cancelled")
-  );
-}
-
 function commandExitCode(content?: string): number | undefined {
   if (!content) return undefined;
   try {
@@ -195,14 +187,20 @@ function commandExitCode(content?: string): number | undefined {
   }
 }
 
+// Whether a result is a cancellation is decided by the backend and arrives as
+// a flag — see stream.IsCanceledResult. It used to be inferred here by looking
+// for "cancel" anywhere in the result text, which reads a control signal out
+// of arbitrary content: a tool whose output merely discussed cancellation got
+// labelled cancelled despite having run fine. Harmless while every tool was
+// ours and terse; an MCP server returning a page of documentation broke it.
 function normalizeToolStatus(
   status: "pending" | "running" | "ok" | "error" | "cancelled" | undefined,
   ok: boolean | undefined,
+  cancelled: boolean | undefined,
   content?: string,
-  error?: string,
   toolName?: string,
 ): ToolCall["status"] {
-  if (status === "cancelled" || isCancelledToolResult(content, error)) {
+  if (status === "cancelled" || cancelled) {
     return "cancelled";
   }
   if (toolName === "run_command") {
@@ -230,7 +228,9 @@ function mapPersistedTool(t: {
     id: t.id,
     name: t.name,
     argsJson: t.args_json ?? "",
-    status: normalizeToolStatus(t.status, t.ok, t.content, t.error, t.name),
+    // The fold already resolved cancellation into status, including for rows
+    // written before the flag existed.
+    status: normalizeToolStatus(t.status, t.ok, false, t.content, t.name),
     content: t.content,
     error: t.error,
   };
@@ -248,6 +248,35 @@ function withDerivedFlat(
     .join("\n\n");
   const tools = segments.flatMap((s) => s.tools);
   return { ...t, ...patch, segments, content, tools };
+}
+
+// Move one tool card to a new status, addressing it by call id.
+//
+// Segments are the rendered structure; `tools` is only a flattened view that
+// withDerivedFlat rebuilds from them. Patching `tools` alone therefore appears
+// to work until the next frame arrives and derives the stale status back over
+// it — which is how an approved call used to jump straight from PENDING to
+// DONE, never showing that it was running.
+//
+// Returns the turn untouched when the id isn't found, so a decision arriving
+// for a call this turn doesn't own can't invent a card for it.
+function withToolStatus(
+  t: ChatTurn,
+  callId: string,
+  status: ToolCall["status"],
+): ChatTurn {
+  for (let si = 0; si < t.segments.length; si++) {
+    const ti = t.segments[si].tools.findIndex((tc) => tc.id === callId);
+    if (ti < 0) continue;
+    const segments = t.segments.slice();
+    const seg = { ...segments[si] };
+    const tools = seg.tools.slice();
+    tools[ti] = { ...tools[ti], status };
+    seg.tools = tools;
+    segments[si] = seg;
+    return withDerivedFlat(t, segments);
+  }
+  return t;
 }
 
 function ensureLiveSegments(t: ChatTurn): ReactSegment[] {
@@ -506,8 +535,8 @@ async function runSSELoop(
             const status = normalizeToolStatus(
               undefined,
               f.ok,
+              f.cancelled,
               f.content,
-              f.error ?? f.message,
               f.name,
             );
             upsertTool(f.id, {
@@ -1018,16 +1047,9 @@ export function useChatStream(
       const status: ToolCall["status"] =
         decision === "approve" ? "running" : "cancelled";
       setTurns((prev) =>
-        prev.map((turn) => {
-          if (turn.role !== "assistant") return turn;
-          let changed = false;
-          const tools = turn.tools.map((tool) => {
-            if (tool.id !== callId) return tool;
-            changed = true;
-            return { ...tool, status };
-          });
-          return changed ? { ...turn, tools } : turn;
-        }),
+        prev.map((turn) =>
+          turn.role === "assistant" ? withToolStatus(turn, callId, status) : turn,
+        ),
       );
     },
     [],
@@ -1040,16 +1062,9 @@ export function useChatStream(
       if (!callId) return;
       const status: ToolCall["status"] = cancelled ? "cancelled" : "running";
       setTurns((prev) =>
-        prev.map((turn) => {
-          if (turn.role !== "assistant") return turn;
-          let changed = false;
-          const tools = turn.tools.map((tool) => {
-            if (tool.id !== callId) return tool;
-            changed = true;
-            return { ...tool, status };
-          });
-          return changed ? { ...turn, tools } : turn;
-        }),
+        prev.map((turn) =>
+          turn.role === "assistant" ? withToolStatus(turn, callId, status) : turn,
+        ),
       );
     },
     [],

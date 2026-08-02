@@ -18,6 +18,7 @@ package effect
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 // Kind is the consequence category. Policy decisions switch on this.
@@ -35,6 +36,11 @@ const (
 	KindProcessExec   Kind = "process-exec"
 	KindNetwork       Kind = "network-request"
 	KindSkillLoad     Kind = "skill-load"
+	// KindMCPCall is a tool provided by an MCP server. What it actually does
+	// is only as knowable as the server chooses to declare, so the effect
+	// records the declaration and who made it rather than pretending to know
+	// the consequence.
+	KindMCPCall Kind = "mcp-call"
 	// KindUserInteraction is the tool asking the human something. Approving it
 	// would be redundant — the interaction IS the approval. The tool raises
 	// its own question interrupt downstream.
@@ -108,6 +114,31 @@ type Effect struct {
 	// delegate-agent
 	Agent string `json:"agent,omitempty"`
 
+	// mcp-call. Server and RemoteTool identify the call; the model sees a
+	// prefixed name, and neither the approval card nor the classifier can say
+	// anything useful without the pair behind it.
+	Server     string `json:"server,omitempty"`
+	RemoteTool string `json:"remote_tool,omitempty"`
+	Transport  string `json:"transport,omitempty"`
+
+	// The next four are kept apart rather than folded into one "trusted"
+	// flag, because they are four different claims made by three different
+	// parties, and the approval card has to be able to say which.
+	//
+	// ReadOnly and OpenWorld are the server's own words (readOnlyHint,
+	// openWorldHint). The MCP spec is explicit that a client must not trust
+	// annotations from a server it has not verified, so on their own they
+	// decide nothing.
+	ReadOnly  bool `json:"read_only,omitempty"`
+	OpenWorld bool `json:"open_world,omitempty"`
+	// TrustAnnotations is the user vouching for the server, which is what
+	// makes ReadOnly load-bearing.
+	TrustAnnotations bool `json:"trust_annotations,omitempty"`
+	// AutoApproved is the user naming this one tool in the server's
+	// autoApprove list. Stronger than TrustAnnotations and independent of
+	// what the server claims — but still stopped by the destructive wall.
+	AutoApproved bool `json:"auto_approved,omitempty"`
+
 	// Note carries the derivation failure reason for KindUnknown, or any
 	// extra context worth showing on the approval card. Never load-bearing
 	// for policy.
@@ -150,10 +181,15 @@ func Static(e Effect) Deriver {
 	return func(context.Context, string) (Effect, error) { return e, nil }
 }
 
-// Registry maps tool name to deriver. Built once at startup and read
-// concurrently by every agent's approval middleware, so Register must not be
-// called after the agents are wired.
+// Registry maps tool name to deriver.
+//
+// Writes happen at startup and, for MCP, whenever a server connects or
+// disconnects — which is any time a user edits the connector settings, while
+// agents are mid-run and reading. Hence the lock: a derivation racing a
+// reconnect must see either the old deriver or the new one, and a torn map
+// read would be a crash in the middle of a security decision.
 type Registry struct {
+	mu     sync.RWMutex
 	byTool map[string]Deriver
 }
 
@@ -170,7 +206,25 @@ func (r *Registry) Register(tool string, d Deriver) {
 	if r == nil || tool == "" || d == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.byTool[tool] = d
+}
+
+// Unregister drops a tool's deriver, for a remote tool that went away with
+// its server.
+//
+// Leaving the entry would be the more dangerous choice than it looks: tool
+// names are derived from the server name, so the next server to take that
+// name inherits the old server's effect — including, potentially, a
+// TrustAnnotations the user granted to somebody else.
+func (r *Registry) Unregister(tool string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byTool, tool)
 }
 
 // Has reports whether a deriver is registered. Used by tests and startup
@@ -179,6 +233,8 @@ func (r *Registry) Has(tool string) bool {
 	if r == nil {
 		return false
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	_, ok := r.byTool[tool]
 	return ok
 }
@@ -191,10 +247,15 @@ func (r *Registry) Derive(ctx context.Context, tool, argsJSON string) Effect {
 	if r == nil {
 		return Unknown("no effect registry wired")
 	}
+	r.mu.RLock()
 	d, ok := r.byTool[tool]
+	r.mu.RUnlock()
 	if !ok {
 		return Unknown("no effect deriver registered for " + tool)
 	}
+	// The deriver runs outside the lock. It can parse arguments and touch the
+	// filesystem to resolve paths, and holding a read lock across that would
+	// let one slow derivation block every reconnect.
 	e, err := d(ctx, argsJSON)
 	if err != nil {
 		return Unknown("effect derivation failed for " + tool + ": " + err.Error())
