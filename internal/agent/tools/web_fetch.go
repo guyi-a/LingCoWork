@@ -16,9 +16,9 @@ import (
 
 type webFetchInput struct {
 	URL             string `json:"url" jsonschema:"description=Target URL to fetch (http/https only). Required."`
-	Prompt          string `json:"prompt,omitempty" jsonschema:"description=What you're looking for in the page (helps you focus when reading the returned text). Examples: 'Find the pricing table', 'Extract the API endpoint list'. Optional; just prefixes the returned text."`
-	MaxBytes        int    `json:"max_bytes,omitempty" jsonschema:"description=Max bytes to download. Default 2MB, max 5MB. Bump if the page is heavy and you're missing content."`
-	TimeoutSec      int    `json:"timeout_sec,omitempty" jsonschema:"description=Request timeout in seconds. Default 30, max 120."`
+	Prompt          string `json:"prompt,omitempty" jsonschema:"description=What you're looking for in the page (helps you focus when reading the returned text). Examples: 'Find the pricing table'\\, 'Extract the API endpoint list'. Optional; just prefixes the returned text."`
+	MaxBytes        int    `json:"max_bytes,omitempty" jsonschema:"description=Max bytes to download. Default 2MB\\, max 5MB. Bump if the page is heavy and you're missing content."`
+	TimeoutSec      int    `json:"timeout_sec,omitempty" jsonschema:"description=Request timeout in seconds. Default 30\\, max 120."`
 	FollowRedirects bool   `json:"follow_redirects,omitempty" jsonschema:"description=Follow HTTP 3xx redirects. Default true. Same-host redirects are followed up to 10 hops; cross-host redirects always return is_redirect=true (call web_fetch again with the new URL if you want them)."`
 	UseCache        *bool  `json:"use_cache,omitempty" jsonschema:"description=Use LRU cache (15min TTL). Default true. Set false when you need a fresh fetch (e.g. checking a rapidly-changing status page)."`
 }

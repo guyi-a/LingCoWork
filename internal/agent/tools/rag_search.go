@@ -13,8 +13,8 @@ import (
 )
 
 type ragSearchInput struct {
-	Query string `json:"query" jsonschema:"description=Search query. Chinese or English keywords, phrases, or questions. Examples: 'MySQL 索引失效', 'goroutine 调度', 'Redis 持久化机制', 'kafka 消息丢失'. Longer / more specific queries yield more accurate top results."`
-	TopK  int    `json:"top_k,omitempty" jsonschema:"description=How many top results to return. Default 5, max 20. Use 3-5 when just checking one concept, 8-15 when exploring or picking questions across a domain."`
+	Query string `json:"query" jsonschema:"description=Search query. Chinese or English keywords\\, phrases\\, or questions. Examples: 'MySQL 索引失效'\\, 'goroutine 调度'\\, 'Redis 持久化机制'\\, 'kafka 消息丢失'. Longer / more specific queries yield more accurate top results."`
+	TopK  int    `json:"top_k,omitempty" jsonschema:"description=How many top results to return. Default 5\\, max 20. Use 3-5 when just checking one concept\\, 8-15 when exploring or picking questions across a domain."`
 }
 
 type ragSearchHit struct {

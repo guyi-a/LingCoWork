@@ -460,9 +460,9 @@ func newWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 
 type EditFileInput struct {
 	Path       string `json:"path" jsonschema:"description=File path to edit. Relative to workspace root."`
-	OldString  string `json:"old_string" jsonschema:"description=Exact text to find. Must appear EXACTLY ONCE in the file when replace_all=false (otherwise the edit is rejected — add more surrounding context to make the match unique). When replace_all=true, may match multiple times."`
+	OldString  string `json:"old_string" jsonschema:"description=Exact text to find. Must appear EXACTLY ONCE in the file when replace_all=false (otherwise the edit is rejected — add more surrounding context to make the match unique). When replace_all=true\\, may match multiple times."`
 	NewString  string `json:"new_string" jsonschema:"description=Replacement text. Use empty string to delete the matched region."`
-	ReplaceAll bool   `json:"replace_all" jsonschema:"description=If true, replace every occurrence of old_string. If false (default), require old_string to appear exactly once."`
+	ReplaceAll bool   `json:"replace_all" jsonschema:"description=If true\\, replace every occurrence of old_string. If false (default)\\, require old_string to appear exactly once."`
 }
 
 type EditFileOutput struct {
@@ -540,8 +540,8 @@ func newEditFileTool(d *fsDeps) (tool.BaseTool, error) {
 type EditFileLinesInput struct {
 	Path       string `json:"path" jsonschema:"description=File path to edit. Relative to workspace root."`
 	StartLine  int    `json:"start_line" jsonschema:"description=1-based line number where the replacement begins (inclusive)."`
-	EndLine    int    `json:"end_line" jsonschema:"description=1-based line number where the replacement ends (inclusive). Must be >= start_line. To replace one line, set end_line = start_line."`
-	NewContent string `json:"new_content" jsonschema:"description=Text to put in place of lines [start_line, end_line]. Use empty string to delete the range. Interior newlines are preserved; a trailing newline is added automatically when needed to keep the file well-formed."`
+	EndLine    int    `json:"end_line" jsonschema:"description=1-based line number where the replacement ends (inclusive). Must be >= start_line. To replace one line\\, set end_line = start_line."`
+	NewContent string `json:"new_content" jsonschema:"description=Text to put in place of lines [start_line\\, end_line]. Use empty string to delete the range. Interior newlines are preserved; a trailing newline is added automatically when needed to keep the file well-formed."`
 }
 
 type EditFileLinesOutput struct {

@@ -208,7 +208,17 @@ func (d *fsDeps) chunkedWriteEffect() effect.Deriver {
 		if err := unmarshalArgs(argsJSON, &in); err != nil {
 			return effect.Effect{}, err
 		}
-		if in.Mode != "start" {
+		// Resolve the mode the same way the tool does rather than comparing
+		// the raw field. The tool trims and lower-cases it, and infers it from
+		// the argument shape when it is missing, so a literal comparison here
+		// would wave through " Start" — or a mode-less call carrying a path —
+		// as a session continuation and then execute it as a real start.
+		//
+		// A mode that will not resolve is reported as harmless because the
+		// tool rejects that same input before it touches the filesystem;
+		// asking the user to approve a call that cannot write is just noise.
+		mode, err := resolveChunkedMode(&in)
+		if err != nil || mode != "start" {
 			return effect.Effect{
 				Kind: effect.KindFileStructure,
 				Note: "continues a write session already approved at mode=start",

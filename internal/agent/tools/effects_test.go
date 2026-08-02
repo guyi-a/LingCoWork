@@ -194,6 +194,19 @@ func TestDeriveChunkedWriteOnlyGatesStart(t *testing.T) {
 			t.Errorf("mode=%s kind = %q, want filesystem-structure", mode, e.Kind)
 		}
 	}
+
+	// The tool normalizes the mode and infers it from the argument shape when
+	// it is absent, so anything the tool will run AS a start has to be gated
+	// as one. Comparing the raw field here would let these through.
+	for _, args := range []string{
+		`{"mode":" Start ","path":"out.md"}`,
+		`{"mode":"START","path":"out.md"}`,
+		`{"path":"out.md","content":"chapter one"}`,
+	} {
+		if e := reg.Derive(ctx, "write_file_chunked", args); e.Kind != effect.KindFileWrite {
+			t.Errorf("%s kind = %q, want filesystem-write — this call starts a write", args, e.Kind)
+		}
+	}
 }
 
 func TestDeriveMalformedArgsFailsClosed(t *testing.T) {

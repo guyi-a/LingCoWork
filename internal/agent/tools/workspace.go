@@ -19,7 +19,7 @@ import (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 
 type CreateWorkspaceInput struct {
-	Slug string `json:"slug" jsonschema:"description=Workspace directory name. Must match ^[a-z0-9][a-z0-9-]{0,40}$ (lowercase letters, digits, hyphens). Used as the on-disk folder and the project id. Example: 'golang-interview-prep'"`
+	Slug string `json:"slug" jsonschema:"description=Workspace directory name. Must match ^[a-z0-9][a-z0-9-]{0\\,40}$ (lowercase letters\\, digits\\, hyphens). Used as the on-disk folder and the project id. Example: 'golang-interview-prep'."`
 	Name string `json:"name" jsonschema:"description=Human-readable project name (any language). Shown in the sidebar. Example: 'Go 面试题库'"`
 }
 

@@ -29,10 +29,10 @@ const (
 )
 
 type ChunkedWriteInput struct {
-	Mode      string `json:"mode" jsonschema:"description=Write mode: start, append, finish, or abort."`
+	Mode      string `json:"mode" jsonschema:"description=Write mode. Exactly one of: start / append / finish / abort. Always required — every call must carry it\\, including every append."`
 	Path      string `json:"path,omitempty" jsonschema:"description=Target file path relative to workspace root. Required when mode=start."`
 	Content   string `json:"content,omitempty" jsonschema:"description=Content chunk to append. Required when mode=append; optional initial content when mode=start."`
-	SessionID string `json:"session_id,omitempty" jsonschema:"description=Write session id returned by mode=start. Required for append, finish, and abort."`
+	SessionID string `json:"session_id,omitempty" jsonschema:"description=Write session id returned by mode=start. Required for append\\, finish\\, and abort."`
 }
 
 type ChunkedWriteOutput struct {
@@ -56,7 +56,10 @@ type chunkedWriteSession struct {
 
 func newChunkedWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 	fn := func(ctx context.Context, in *ChunkedWriteInput) (*ChunkedWriteOutput, error) {
-		mode := strings.ToLower(strings.TrimSpace(in.Mode))
+		mode, err := resolveChunkedMode(in)
+		if err != nil {
+			return nil, err
+		}
 		switch mode {
 		case "start":
 			return chunkedWriteStart(ctx, d, in)
@@ -77,12 +80,44 @@ func newChunkedWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 	)
 }
 
+// resolveChunkedMode recovers the mode when the model leaves it out.
+//
+// A dropped mode is not a harmless error here. The call is rejected, but a
+// rejected append reads much like any other failed step in the transcript, so
+// the model tends to carry on with the next chunk rather than re-send the one
+// that bounced — and finish then saves a file with a hole in the middle that
+// nobody notices until they read it. The argument shape is unambiguous in
+// every case but one, so prefer honoring the obvious intent over being right
+// about the schema.
+func resolveChunkedMode(in *ChunkedWriteInput) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	switch mode {
+	case "start", "append", "finish", "abort":
+		return mode, nil
+	case "":
+		// finish and abort never carry content, and append is the only mode
+		// that needs a session, so content plus a session can only be one.
+		switch {
+		case strings.TrimSpace(in.SessionID) != "" && in.Content != "":
+			return "append", nil
+		case strings.TrimSpace(in.SessionID) == "" && strings.TrimSpace(in.Path) != "":
+			return "start", nil
+		}
+		return "", fmt.Errorf("mode is missing and cannot be inferred from the other arguments: " +
+			"pass mode=finish to save the file, or mode=abort to discard it")
+	default:
+		return "", fmt.Errorf("mode must be one of start, append, finish, abort (got %q)", in.Mode)
+	}
+}
+
 func chunkedWriteStart(ctx context.Context, d *fsDeps, in *ChunkedWriteInput) (*ChunkedWriteOutput, error) {
 	if strings.TrimSpace(in.Path) == "" {
 		return nil, fmt.Errorf("path is required when mode=start")
 	}
 	if len([]byte(in.Content)) > maxChunkBytes {
-		return nil, fmt.Errorf("initial content chunk too large: %d bytes (max %d)", len([]byte(in.Content)), maxChunkBytes)
+		return nil, fmt.Errorf("initial content chunk too large: %d bytes (max %d). "+
+			"No session was opened and NOTHING was written — start again with a smaller first chunk",
+			len([]byte(in.Content)), maxChunkBytes)
 	}
 	ws, err := d.resolveWorkspace(ctx)
 	if err != nil {
@@ -151,7 +186,9 @@ func chunkedWriteAppend(ctx context.Context, d *fsDeps, in *ChunkedWriteInput) (
 		return nil, fmt.Errorf("content cannot be empty when mode=append")
 	}
 	if len([]byte(in.Content)) > maxChunkBytes {
-		return nil, fmt.Errorf("content chunk too large: %d bytes (max %d)", len([]byte(in.Content)), maxChunkBytes)
+		return nil, fmt.Errorf("content chunk too large: %d bytes (max %d). "+
+			"NOTHING was written — split this chunk and re-send all of it before moving on",
+			len([]byte(in.Content)), maxChunkBytes)
 	}
 	ws, err := d.resolveWorkspace(ctx)
 	if err != nil {
@@ -166,7 +203,8 @@ func chunkedWriteAppend(ctx context.Context, d *fsDeps, in *ChunkedWriteInput) (
 	}
 	nextSize := session.BytesWritten + int64(len([]byte(in.Content)))
 	if nextSize > maxChunkedWriteBytes {
-		return nil, fmt.Errorf("chunked file too large: %d bytes (max %d)", nextSize, maxChunkedWriteBytes)
+		return nil, fmt.Errorf("chunked file too large: %d bytes (max %d). NOTHING was written",
+			nextSize, maxChunkedWriteBytes)
 	}
 	f, err := os.OpenFile(session.TempPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {

@@ -32,7 +32,7 @@ import (
 type browserUseInput struct {
 	Action      string `json:"action" jsonschema:"description=One of: open_tab / list_pages / close_tab / focus_page / read_state / click / hover / dblclick / rightclick / type / press / scroll / wait_for / go_back / reload / extract / screenshot / execute_script / close_session"`
 	PageID      string `json:"page_id,omitempty" jsonschema:"description=Page identifier returned by open_tab. Required for most actions."`
-	URL         string `json:"url,omitempty" jsonschema:"description=Absolute URL for open_tab, must include scheme (http/https/file)."`
+	URL         string `json:"url,omitempty" jsonschema:"description=Absolute URL for open_tab\\, must include scheme (http/https/file)."`
 	Index       int    `json:"index,omitempty" jsonschema:"description=Element index from the last read_state. Required for click / hover / dblclick / rightclick / type / extract."`
 	Text        string `json:"text,omitempty" jsonschema:"description=For type: what to fill into the element."`
 	Key         string `json:"key,omitempty" jsonschema:"description=For press: 'Enter' / 'Tab' / 'Escape' / 'Control+A' etc."`
@@ -312,7 +312,7 @@ func resolveScreenshotPath(
 // --- browser_use_install ---
 
 type installInput struct {
-	Step string `json:"step" jsonschema:"description=One of: check (probe local state) / install (download driver + chromium; ~150MB, slow)"`
+	Step string `json:"step" jsonschema:"description=One of: check (probe local state) / install (download driver + chromium; ~150MB\\, slow)."`
 }
 
 type installOutput struct {

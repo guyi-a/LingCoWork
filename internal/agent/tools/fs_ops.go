@@ -20,7 +20,7 @@ import (
 
 type RmInput struct {
 	Path      string `json:"path" jsonschema:"description=Path to delete. Absolute local path (anywhere on the user's machine) or workspace-relative. Only list a path when the user explicitly names it; don't clean up outside the workspace on your own."`
-	Recursive bool   `json:"recursive" jsonschema:"description=If true, recursively delete a directory and all its contents (rm -rf). If false (default), only delete a file or an EMPTY directory."`
+	Recursive bool   `json:"recursive" jsonschema:"description=If true\\, recursively delete a directory and all its contents (rm -rf). If false (default)\\, only delete a file or an EMPTY directory."`
 }
 
 type RmOutput struct {
@@ -84,7 +84,7 @@ func newRmTool(d *fsDeps) (tool.BaseTool, error) {
 
 type MvInput struct {
 	Src string `json:"src" jsonschema:"description=Source path. Absolute local path (anywhere on the user's machine) or workspace-relative. Source is deleted after the move."`
-	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory, src is moved INTO it (as dst/basename(src)). If dst does not exist, src is renamed to dst (parent directory is created if missing). If dst is an existing file, the call is REJECTED — delete dst first."`
+	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory\\, src is moved INTO it (as dst/basename(src)). If dst does not exist\\, src is renamed to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
 }
 
 type MvOutput struct {
@@ -164,8 +164,8 @@ func newMvTool(d *fsDeps) (tool.BaseTool, error) {
 // --- cp ---
 
 type CpInput struct {
-	Src string `json:"src" jsonschema:"description=Source path. Absolute local path (anywhere on the user's machine) or workspace-relative. Copied read-only, source is untouched."`
-	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory, src is copied INTO it (as dst/basename(src)). If dst does not exist, src is copied to dst (parent directory is created if missing). If dst is an existing file, the call is REJECTED — delete dst first."`
+	Src string `json:"src" jsonschema:"description=Source path. Absolute local path (anywhere on the user's machine) or workspace-relative. Copied read-only\\, source is untouched."`
+	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory\\, src is copied INTO it (as dst/basename(src)). If dst does not exist\\, src is copied to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
 }
 
 type CpOutput struct {
