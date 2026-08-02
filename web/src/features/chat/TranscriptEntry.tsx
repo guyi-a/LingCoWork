@@ -424,25 +424,33 @@ export function TranscriptEntry({
         ) : null;
       })()}
 
-      {isUser ? (
-        <div className="text-ink rounded-2xl bg-subtle px-4 py-3">
-          {(() => {
+      {isUser
+        ? (() => {
             const { attachments, text } = parseAttachmentMarkers(turn.content);
             return (
               <>
-                {attachments.length > 0 && (
-                  <UserAttachmentChips attachments={attachments} />
-                )}
+                <div className="text-ink rounded-2xl bg-subtle px-4 py-3">
+                  {attachments.length > 0 && (
+                    <UserAttachmentChips attachments={attachments} />
+                  )}
+                  {text ? (
+                    <MessageBody content={text} streaming={streaming} />
+                  ) : attachments.length === 0 && streaming ? (
+                    <span className="text-muted">…</span>
+                  ) : null}
+                </div>
+                {/* Copies the parsed text, not turn.content: the raw row still
+                    carries the attachment marker lines, which are chips on
+                    screen and were never typed as that syntax. */}
                 {text ? (
-                  <MessageBody content={text} streaming={streaming} />
-                ) : attachments.length === 0 && streaming ? (
-                  <span className="text-muted">…</span>
+                  <div className="mt-2 flex">
+                    <CopyButton text={text} />
+                  </div>
                 ) : null}
               </>
             );
-          })()}
-        </div>
-      ) : null}
+          })()
+        : null}
 
       {turn.role === "assistant" && !streaming && (
         <TurnFooter
