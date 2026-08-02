@@ -35,7 +35,7 @@ export function ConversationHeader({
           </span>
         )}
         <h2
-          className="min-w-0 flex-1 text-[15px] leading-6 text-ink break-words"
+          className="min-w-0 flex-1 text-[15px] leading-6 text-ink truncate"
           title={title}
         >
           {title}

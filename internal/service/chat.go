@@ -688,6 +688,34 @@ func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled boo
 	return out
 }
 
+// titleMaxRunes caps the conversation title. The source is a whole user
+// message, which routinely runs to thousands of characters, and the column is
+// varchar(255) — so the name of this function was a promise it did not keep.
+const titleMaxRunes = 60
+
+// truncateForTitle derives a conversation title from the first user message:
+// its opening line, whitespace collapsed, cut to length.
+//
+// The cut counts runes rather than bytes. Titles here are usually Chinese, and
+// slicing a UTF-8 string at an arbitrary byte offset lands in the middle of a
+// multi-byte character and produces a replacement glyph at the end of every
+// long title.
 func truncateForTitle(s string) string {
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// A prompt's first line is nearly always the request itself; the rest is
+	// the supporting detail nobody wants in a sidebar entry.
+	line := s
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.Join(strings.Fields(line), " ")
+
+	runes := []rune(line)
+	if len(runes) <= titleMaxRunes {
+		return line
+	}
+	return strings.TrimRight(string(runes[:titleMaxRunes]), " ") + "…"
 }
