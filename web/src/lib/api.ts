@@ -217,6 +217,9 @@ export type PendingInterruptItem = {
   call_id?: string;
   tool?: string;
   args_json?: string;
+  // 审批依据的 effect（后端 internal/effect 的序列化结果）。可能缺失：
+  // 这个字段上线前落盘的 pending 行没有它，卡片回退到按 args_json 渲染。
+  effect_json?: string;
   questions_json?: string;
 };
 

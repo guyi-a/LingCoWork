@@ -58,6 +58,13 @@ type Frame struct {
 	CheckpointID string `json:"checkpoint_id,omitempty"`
 	InterruptID  string `json:"interrupt_id,omitempty"`
 
+	// approval_required frame — the marshalled effect the approval decision
+	// was made from. The card prefers it over re-reading ArgsJSON, because a
+	// tool the frontend has never heard of (an MCP server's, say) still has a
+	// describable effect. Empty for approvals checkpointed before this
+	// existed, and the card falls back to its old argument summary.
+	EffectJSON string `json:"effect_json,omitempty"`
+
 	// question_required frame — JSON-encoded []hitl.Question that the user
 	// should answer. Kept as string so the wire schema stays flat and the
 	// frontend can lazily decode.
@@ -88,6 +95,13 @@ type ApprovalInfo struct {
 	// CallID is the eino tool call id (tc-N), so the UI can pin the
 	// approval card visually next to the tool_call frame that spawned it.
 	CallID string
+	// EffectJSON is the marshalled effect.Effect the approval decision was
+	// made from. Carried as a string rather than the struct so this package
+	// stays leaf-level and doesn't import effect just to hold the payload.
+	//
+	// The card falls back to summarising Args when this is empty, which is
+	// what happens for approvals checkpointed before the field existed.
+	EffectJSON string
 }
 
 // QuestionInfo is what the ask_user tool attaches to tool.Interrupt so the
@@ -475,10 +489,10 @@ func NewSSEHandler(buf *StreamBuffer, collector *RunCollector) callbacks.Handler
 				Name:    info.Name,
 				OK:      boolPtr(true),
 				Content: content,
-				}))
-				if collector != nil {
-					collector.finishTool(id, true, content, "")
-				}
+			}))
+			if collector != nil {
+				collector.finishTool(id, true, content, "")
+			}
 			return ctx
 		}).
 		OnEndWithStreamOutputFn(func(ctx context.Context, info *callbacks.RunInfo, sr *schema.StreamReader[callbacks.CallbackOutput]) context.Context {

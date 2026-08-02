@@ -103,6 +103,8 @@ type Frame = {
   checkpoint_id?: string;
   interrupt_id?: string;
   questions_json?: string;
+  // approval_required — 后端 effect 的序列化结果，卡片优先用它描述这次调用。
+  effect_json?: string;
   // usage — one frame per model call, so `total` is the context that call
   // saw, not a running sum. The last one to arrive is the turn's occupancy.
   prompt?: number;
@@ -752,6 +754,7 @@ export function useChatStream(
                 callId: f.id ?? "",
                 tool: f.name ?? "",
                 argsJson: f.args_json ?? "",
+                effectJson: f.effect_json ?? "",
               });
             }
           },
@@ -847,6 +850,7 @@ export function useChatStream(
               callId: item.call_id ?? "",
               tool: item.tool ?? "",
               argsJson: item.args_json ?? "",
+              effectJson: item.effect_json ?? "",
             });
           }
         }

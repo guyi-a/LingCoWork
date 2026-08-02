@@ -11,54 +11,67 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/guyi-a/Interview-Agent/internal/agent/contextkey"
+	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 )
 
 // Middleware wraps tool calls with the approval decision chain. Order is:
 //
-//  1. destructive tools (rm / drop / etc.) → ALWAYS prompt, even in
-//     full_access. See destructive.go.
-//  2. full_access → skip approval entirely (post-destructive so an
-//     elevated mode can't green-light data loss).
-//  3. policy.NeedsApproval says no → run normally.
-//  4. resume: apply the user's decision (allow → next; deny → denial JSON).
-//  5. auto mode:
+//  1. derive the effect. An unregistered tool or a failing deriver yields
+//     KindUnknown.
+//  2. MustAsk (irreversible, or an effect we couldn't derive) → ALWAYS
+//     prompt, even in full_access.
+//  3. full_access → skip approval (placed after step 2 so an elevated mode
+//     can't green-light data loss or an unrecognised call).
+//  4. policy says no approval needed → run normally.
+//  5. resume: apply the user's decision (allow → next; deny → denial JSON).
+//  6. auto mode:
 //     a. IsSafeAuto (fast path rules)   → next
 //     b. Classifier (LLM) says allow    → next
 //     ↳ anything else falls through.
-//  6. Otherwise (default mode, or auto that fell through): tool.Interrupt
+//  7. Otherwise (default mode, or auto that fell through): tool.Interrupt
 //     to pause for the human.
+//
+// Every agent in the process shares one Middleware value. Building a second
+// one per sub-agent would work, but the supervisor and its sub-agents would
+// then be judging calls against separately-constructed policy, and a future
+// change that only reached one construction site would silently leave the
+// others on the old rules.
 //
 // Wire it OUTSIDE toolerr.Middleware so the interrupt sentinel error bubbles
 // straight up to the framework instead of being wrapped into a fake tool
 // result:
 //
 //	ToolCallMiddlewares: []compose.ToolMiddleware{
-//	    approval.Middleware(store, classifier),
+//	    approvalMW,
 //	    toolerr.Middleware(),
 //	}
-func Middleware(store *ModeStore, classifier *Classifier) compose.ToolMiddleware {
+func Middleware(store *ModeStore, classifier *Classifier, registry *effect.Registry) compose.ToolMiddleware {
+	interrupt := func(ctx context.Context, input *compose.ToolInput, e effect.Effect) error {
+		return tool.Interrupt(ctx, &stream.ApprovalInfo{
+			Tool:       input.Name,
+			Args:       input.Arguments,
+			CallID:     input.CallID,
+			EffectJSON: e.JSON(),
+		})
+	}
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
-				decision := evaluate(ctx, store, classifier, input.Name, input.Arguments)
+				decision := evaluate(ctx, store, classifier, registry, input.Name, input.Arguments)
 				switch decision.kind {
 				case decisionPass:
 					return next(ctx, input)
 				case decisionDeny:
 					return &compose.ToolOutput{Result: denialMessage(input.Name, decision.reason)}, nil
 				default:
-					return nil, tool.Interrupt(ctx, &stream.ApprovalInfo{
-						Tool:   input.Name,
-						Args:   input.Arguments,
-						CallID: input.CallID,
-					})
+					return nil, interrupt(ctx, input, decision.effect)
 				}
 			}
 		},
 		Streamable: func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
-				decision := evaluate(ctx, store, classifier, input.Name, input.Arguments)
+				decision := evaluate(ctx, store, classifier, registry, input.Name, input.Arguments)
 				switch decision.kind {
 				case decisionPass:
 					return next(ctx, input)
@@ -67,11 +80,7 @@ func Middleware(store *ModeStore, classifier *Classifier) compose.ToolMiddleware
 						Result: schema.StreamReaderFromArray([]string{denialMessage(input.Name, decision.reason)}),
 					}, nil
 				default:
-					return nil, tool.Interrupt(ctx, &stream.ApprovalInfo{
-						Tool:   input.Name,
-						Args:   input.Arguments,
-						CallID: input.CallID,
-					})
+					return nil, interrupt(ctx, input, decision.effect)
 				}
 			}
 		},
@@ -92,31 +101,40 @@ const (
 type decision struct {
 	kind   decisionKind
 	reason string // for decisionDeny: user reason surfaced to the model
+	effect effect.Effect
 }
 
-func evaluate(ctx context.Context, store *ModeStore, classifier *Classifier, toolName, argsJSON string) decision {
-	// (1) Destructive wall — applies to every mode including full_access.
-	if isDest, why := IsDestructive(toolName, argsJSON); isDest {
+func evaluate(
+	ctx context.Context,
+	store *ModeStore,
+	classifier *Classifier,
+	registry *effect.Registry,
+	toolName, argsJSON string,
+) decision {
+	e := registry.Derive(ctx, toolName, argsJSON)
+
+	// (1) Cases no mode may skip: irreversible, or underivable.
+	if must, why := MustAsk(e); must {
 		if resumed, dec, ok := resumeDecision(ctx); resumed {
 			if ok && !dec.Approved {
-				return decision{kind: decisionDeny, reason: dec.Reason}
+				return decision{kind: decisionDeny, reason: dec.Reason, effect: e}
 			}
-			return decision{kind: decisionPass}
+			return decision{kind: decisionPass, effect: e}
 		}
-		log.Printf("approval: destructive gate held %s (%s)", toolName, why)
-		return decision{kind: decisionInterrupt}
+		log.Printf("approval: wall held %s (%s / %s)", toolName, e.Kind, why)
+		return decision{kind: decisionInterrupt, effect: e}
 	}
 
 	mode := store.Get(contextkey.ConversationID(ctx))
 
-	// (2) full_access — post-destructive so elevation can't skip the wall.
+	// (2) full_access — after the wall, so elevation can't step over it.
 	if mode == ModeFullAccess {
-		return decision{kind: decisionPass}
+		return decision{kind: decisionPass, effect: e}
 	}
 
 	// (3) Policy says no approval needed.
-	if !NeedsApproval(toolName, argsJSON) {
-		return decision{kind: decisionPass}
+	if !NeedsApproval(e) {
+		return decision{kind: decisionPass, effect: e}
 	}
 
 	// (4) Already resumed with a decision.
@@ -124,32 +142,32 @@ func evaluate(ctx context.Context, store *ModeStore, classifier *Classifier, too
 		if !ok || dec.Approved {
 			// No decision attached: treat as approved so implicit-resume-all
 			// flows (Runner.Resume without params) don't deadlock.
-			return decision{kind: decisionPass}
+			return decision{kind: decisionPass, effect: e}
 		}
-		return decision{kind: decisionDeny, reason: dec.Reason}
+		return decision{kind: decisionDeny, reason: dec.Reason, effect: e}
 	}
 
 	// (5) auto mode: fast path → classifier → fall through.
 	if mode == ModeAuto {
-		if ok, why := IsSafeAuto(toolName, argsJSON); ok {
+		if ok, why := IsSafeAuto(e, argsJSON); ok {
 			log.Printf("approval: auto fastpath allowed %s (%s)", toolName, why)
-			return decision{kind: decisionPass}
+			return decision{kind: decisionPass, effect: e}
 		}
 		if classifier.IsAvailable() {
-			verdict, err := classifier.Classify(ctx, toolName, argsJSON, "")
+			verdict, err := classifier.Classify(ctx, toolName, e, argsJSON)
 			if err != nil {
 				log.Printf("approval: classifier failed for %s: %v (reason=%s)", toolName, err, verdict.Reason)
 			}
 			if verdict.Approved {
 				log.Printf("approval: auto classifier allowed %s (%s)", toolName, verdict.Reason)
-				return decision{kind: decisionPass}
+				return decision{kind: decisionPass, effect: e}
 			}
 			log.Printf("approval: auto classifier deferred %s (%s)", toolName, verdict.Reason)
 		}
 		// Fall through to interrupt.
 	}
 
-	return decision{kind: decisionInterrupt}
+	return decision{kind: decisionInterrupt, effect: e}
 }
 
 // resumeDecision distills tool.GetInterruptState + tool.GetResumeContext

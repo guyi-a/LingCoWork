@@ -22,7 +22,7 @@
   - OCR：`ocr_collector`
 - **Skills**（`internal/agent/skills`）— docx / pdf / pptx / bosszp / browser-bridge / browser-use，按需加载，避免主 prompt 膨胀。
 - **RAG 层** — chunker → embedding → indexer → retriever → sqlite 向量存储；离线索引用 `cmd/rag-index`，命令行检索用 `cmd/rag-search`。默认嵌入模型走阿里云 DashScope OpenAI-兼容接口，可替换为任意 `/embeddings` 端点。
-- **审批 / HITL** — `internal/approval` + `internal/hitl`：破坏性动作会挂起等用户放行；`APPROVAL_FAST_MODEL`（默认 DeepSeek Chat）作为快速分类器决定是否走 auto 模式。
+- **审批 / HITL** — `internal/effect` + `internal/approval` + `internal/hitl`：每个工具声明自己的调用后果（effect），审批策略是这份后果的纯函数，未知 effect 一律问人——这样接入 MCP 第三方工具时不会因为"没见过这个名字"而被静默放行。`APPROVAL_FAST_MODEL`（默认 DeepSeek Chat）作为快速分类器决定是否走 auto 模式。
 - **工作区隔离** — 每个会话都有独立的 `.workspace/<id>/`，工具的路径都在里面 resolve，防止越界。
 - **前端**（`web/`）— React 19 + Vite + Tailwind + Zustand + Streamdown（Markdown 流式渲染）+ Shiki + KaTeX，附带 docx / pptx 预览器。
 - **桌面壳**（`electron/`）— 只在 dev 期加载 Vite `:5173`，不负责起后端；纯壳。
@@ -47,7 +47,8 @@
 │   └── rag-search/   # 命令行检索 CLI
 ├── internal/
 │   ├── agent/        # Agent、LLM、tools、skills、prompts、runtimectx
-│   ├── approval/     # 破坏性操作审批
+│   ├── approval/     # 审批策略 + 破坏性命令 shell AST 分析
+│   ├── effect/       # 工具调用后果描述（审批策略的输入，MCP 接入点）
 │   ├── compaction/   # 跨轮次上下文压缩
 │   ├── llmhttp/      # 极简 OpenAI 兼容客户端（分类器 / 摘要器共用）
 │   ├── hitl/         # 人工介入 (ask_user)
@@ -164,7 +165,7 @@ go run ./cmd/rag-search "query keywords"      # 命令行验证检索
 
 - **Workspace 隔离** — 每个 conversation 一个 `.workspace/<id>/`，所有工具的路径都先经 `workspace_resolve`，越界的路径会被拒。
 - **流式与阶段追踪** — `internal/stream` 分阶段发 SSE，前端可以拿到 "thinking / tool_call / tool_result / text" 等阶段标签。
-- **审批门槛** — 默认 shell、fs 破坏性操作会挂起等审批；`APPROVAL_MODE=auto` 时快速分类器判断能不能自动放行；`ask_user` 工具走同一套人工介入通道。
+- **审批门槛** — 策略按调用的 **effect**（`internal/effect`）决策而非工具名：写入、移动、执行命令、以及读取工作区外的文件会挂起等审批；破坏性操作和无法识别 effect 的调用即使 `full_access` 也拦。`APPROVAL_MODE=auto` 时快速分类器判断能不能自动放行；`ask_user` 工具走同一套人工介入通道。
 - **Skills 动态加载** — Skill 是一组 prompt + 允许的工具白名单，用 `load_skill` 工具按需拉进上下文，主 prompt 保持精简。
 
 ## License

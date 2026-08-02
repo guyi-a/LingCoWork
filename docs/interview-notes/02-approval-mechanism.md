@@ -6,7 +6,9 @@
 
 我用 eino 提供的 `tool.Interrupt` + `Runner.ResumeWithParams` 做人在环节的工具审批：**中间件在工具调用前拦截 → 需要审批就抛 Interrupt → eino 把整个 iter 状态存到 checkpoint（SQLite）→ 一个 SSE 帧告诉前端 pause 了 → 前端 POST 用户决策 → 我们从 checkpoint 恢复，把 Decision 塞进 `ResumeParams.Targets`，中间件里读到就 next（放行）或者返回 denial JSON（拒绝）**。
 
-三种模式（`default` / `auto` / `full_access`）分别是"每次都问 / LLM 分类器帮忙 / 全放"，但**破坏性操作（rm -rf 之类）绕不过审批**，就算 full_access 也拦。
+三种模式（`default` / `auto` / `full_access`）分别是"每次都问 / LLM 分类器帮忙 / 全放"，但**破坏性操作（rm -rf 之类）和无法识别的调用绕不过审批**，就算 full_access 也拦。
+
+策略本身**不看工具名，只看 effect**（`internal/effect`）：每个工具注册一个 deriver，把调用翻译成"读工作区内文件 / 往工作区外写 / 执行一条破坏性命令"这类后果描述，策略是这份描述的纯函数。这么设计是为了接 MCP —— 按名字写规则的话，第一个没见过的第三方工具就会掉进 default 分支被放行；按后果写，兜底是 `unknown`，而 unknown 一律问人。
 
 ---
 
@@ -32,9 +34,9 @@
 
 | 模式 | 行为 |
 |---|---|
-| `default` | 每次 `write_file` / `edit_file` / `rm` / `mv` / `run_command` 都问 |
+| `default` | 写、传输、执行、以及**读工作区外的文件**都问 |
 | `auto` | 先跑 fast-path 规则、再跑 LLM 分类器、都不 confident 才问 |
-| `full_access` | 除了破坏性操作全放行 |
+| `full_access` | 除了破坏性操作和 unknown effect 全放行 |
 
 **存储**：`ModeStore` 是**纯内存**（`map[convID] Mode`）—— 故意不落盘，服务重启后 elevation 消失，用户重新选是显式审计记录 [mode.go:38-44](../../internal/approval/mode.go#L38)。
 
@@ -44,11 +46,14 @@
 
 ## 决策链：Middleware.evaluate 的 6 步
 
-核心在 [middleware.go:97](../../internal/approval/middleware.go#L97)，顺序**不能乱**：
+核心在 [middleware.go](../../internal/approval/middleware.go)，顺序**不能乱**：
 
 ```
-evaluate(ctx, store, classifier, toolName, argsJSON):
-    (1) IsDestructive?    → 无条件 interrupt 或 resumed 决策
+evaluate(ctx, store, classifier, registry, toolName, argsJSON):
+    (0) registry.Derive        → 得到 effect；没注册 deriver 或 deriver 报错
+                                 一律得到 KindUnknown
+    (1) MustAsk?               → 无条件 interrupt 或 resumed 决策
+                                 （Destructive 或 KindUnknown）
     (2) mode == full_access?   → decisionPass
     (3) NeedsApproval == false?→ decisionPass
     (4) 已是 resume?           → 按 Decision.Approved 分派 pass / deny
@@ -61,9 +66,11 @@ evaluate(ctx, store, classifier, toolName, argsJSON):
 
 **几个易错点**：
 
-1. **破坏性检查在 full_access 之前**（[middleware.go:99-108](../../internal/approval/middleware.go#L99)）—— 一句话理由是"用户点 full_access 只是加速常规操作，不代表允许自杀"。
-2. **NeedsApproval 是白名单**：只有 write/edit/rm/mv/run_command 这五个（write_file_chunked 特判 mode=start），其他工具（read_file / list_files / mkdir / file_info 等）默认放行 [policy.go:20](../../internal/approval/policy.go#L20)。
-3. **resume 分支放在 auto 之前**：resume 上下文里已经有用户答案了，还去问 classifier 就是浪费。
+1. **MustAsk 在 full_access 之前** —— 一句话理由是"用户点 full_access 只是加速常规操作，不代表允许自杀"。这一步同时拦 unknown：如果只拦 destructive，一个没注册 deriver 的 MCP 工具在 full_access 下会被直接放行，等于白做。
+2. **`NeedsApproval` 吃的是 effect，不是工具名**，而且**没有 mode 参数** —— full_access 在第 (2) 步就返回了，MustAsk 在第 (1) 步已经拿走了任何模式都不能跳过的情况，所以到这一步时模式已经不影响答案。
+3. **fail-closed 在 default 分支**：`NeedsApproval` 的 `default:` 返回 true。以后新加一种 Kind 忘了写规则，是"多问一次"，不是"静默放行"。
+4. **sub-agent 委派要显式注册成 `KindDelegate`**，否则 `deep_research` 这类 agent-as-tool 会掉进 unknown，每次委派都弹一张卡；它本身没有副作用，内部工具调用会过它自己那份 middleware。
+5. **resume 分支放在 auto 之前**：resume 上下文里已经有用户答案了，还去问 classifier 就是浪费。
 
 **返回值**是三选一的 `decisionKind`：
 

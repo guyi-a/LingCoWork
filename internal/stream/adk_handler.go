@@ -212,6 +212,7 @@ func emitInterrupt(
 				frame.ID = info.CallID
 				frame.Name = info.Tool
 				frame.ArgsJSON = info.Args
+				frame.EffectJSON = info.EffectJSON
 			}
 		case *QuestionInfo:
 			frame.Type = "question_required"

@@ -8,6 +8,10 @@ export type PendingApproval = {
   callId: string;
   tool: string;
   argsJson: string;
+  // Serialised backend effect. Optional: absent on approvals that were
+  // checkpointed before the field existed, and the card falls back to
+  // summarising argsJson for those.
+  effectJson?: string;
 };
 
 interface ApprovalStore {

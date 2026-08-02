@@ -33,6 +33,9 @@ type PendingItem struct {
 	// Args 是审批场景下的原始工具 JSON 参数；question 场景放 hitl.Question 数组
 	// 的 JSON 序列化，前端拉 pending 时按 Kind 决定怎么解读。
 	Args string
+	// EffectJSON 是这次审批依据的 effect.Effect 序列化结果，仅 approval 场景
+	// 有值。可能为空：老落盘数据没有这个字段，前端回退到按 Args 渲染。
+	EffectJSON string
 }
 
 // PendingStore keeps in-flight approvals per conversation. In-memory index
@@ -77,6 +80,7 @@ func (s *PendingStore) Record(convID string) stream.InterruptSink {
 				item.Tool = v.Tool
 				item.Args = v.Args
 				item.CallID = v.CallID
+				item.EffectJSON = v.EffectJSON
 			}
 		case *stream.QuestionInfo:
 			item.Kind = hitl.KindQuestion
@@ -113,6 +117,7 @@ func (s *PendingStore) Record(convID string) stream.InterruptSink {
 				CallID:         item.CallID,
 				Tool:           item.Tool,
 				Args:           item.Args,
+				Effect:         item.EffectJSON,
 				Kind:           string(item.Kind),
 			}
 			if err := s.repo.Insert(context.Background(), row); err != nil {
@@ -223,6 +228,7 @@ func (s *PendingStore) Restore(rows []model.PendingApproval) {
 			CallID:       r.CallID,
 			Tool:         r.Tool,
 			Args:         r.Args,
+			EffectJSON:   r.Effect,
 		}
 		s.items[r.ConversationID] = append(s.items[r.ConversationID], item)
 	}

@@ -1,7 +1,6 @@
 package approval
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -9,55 +8,38 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// IsDestructive names tool calls that must always route to human approval,
-// regardless of Mode — including full_access. The intent is a cross-cutting
-// safety wall around irrecoverable operations (rm -rf, DROP TABLE, git
-// reset --hard, etc.) so a user who elevated the mode can't accidentally
-// green-light data loss with one click.
+// This file is the destructive wall: the set of shell commands that route to
+// a human no matter which approval mode the conversation is in, full_access
+// included. A user who elevated the mode is saying they trust the agent's
+// judgment, not that they want one click to be able to lose their data.
 //
-// 对 run_command 的判断走 shell AST 解析：用 mvdan/sh 把 command 字符串
-// parse 成 AST，遍历所有 CallExpr（跨 && || ; | 分段自然拆开），对每一条
-// 子命令做 pattern 匹配。parse 失败时保守返回 destructive（让 agent 明确
-// 拿到一个可诊断的拦截）。
+// 判断走 shell AST 解析：用 mvdan/sh 把 command 字符串 parse 成 AST，遍历
+// 所有 CallExpr（跨 && || ; | 分段自然拆开），对每一条子命令做 pattern
+// 匹配。parse 失败时保守返回 destructive（让 agent 明确拿到一个可诊断的
+// 拦截）。
 //
-// Returns (isDestructive, humanReadableReason). The reason is logged, not
-// shown to the model.
-func IsDestructive(name, argsJSON string) (bool, string) {
-	switch name {
-	case "run_command":
-		return checkShellCommand(argsJSON)
-	default:
-		return false, ""
-	}
-}
-
-// checkShellCommand pulls the command out of run_command's args JSON and
-// walks it. Absent / empty command → not destructive (regular arg validation
-// in the tool will reject it). Malformed JSON → also not destructive here —
-// InferTool's own binding layer will fail earlier with a cleaner error than
-// what we can produce.
-func checkShellCommand(argsJSON string) (bool, string) {
-	if argsJSON == "" {
-		return false, ""
-	}
-	var probe struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil {
-		return false, ""
-	}
-	cmd := strings.TrimSpace(probe.Command)
-	if cmd == "" {
-		return false, ""
-	}
-	return classifyShellCommand(cmd)
-}
+// The entry point is ClassifyShellCommand in shellclass.go; effect derivation
+// calls it and sets Effect.Destructive from the result. Nothing here switches
+// on a tool name — the wall is about what a command does.
 
 // classifyShellCommand parses the command line and returns (destructive,
 // reason) on the first match. Parse failure itself is treated as destructive
 // with reason "unparseable" — safer than letting an unusual quoting pattern
 // slip past the wall.
 func classifyShellCommand(cmd string) (bool, string) {
+	return classifyShellCommandAt(cmd, 0)
+}
+
+// maxUnwrapDepth bounds wrapper recursion. `bash -c "bash -c '...'"` nests
+// legitimately a level or two; beyond that it's either obfuscation or a
+// pathological input, and either way we stop descending rather than let a
+// crafted string drive unbounded parsing.
+const maxUnwrapDepth = 4
+
+func classifyShellCommandAt(cmd string, depth int) (bool, string) {
+	if depth > maxUnwrapDepth {
+		return true, "wrapper nesting too deep to analyse"
+	}
 	file, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
 	if err != nil {
 		return true, "shell parse failed: " + err.Error()
@@ -80,7 +62,7 @@ func classifyShellCommand(cmd string) (bool, string) {
 		if len(words) == 0 {
 			return true
 		}
-		if r, bad := matchDestructive(words); bad {
+		if r, bad := matchDestructiveAt(words, depth); bad {
 			hit = true
 			reason = r
 			return false
@@ -117,8 +99,13 @@ func extractWords(args []*syntax.Word) []string {
 }
 
 // literalOf pulls the concatenated literal string out of a Word. Non-literal
-// parts (subshells, expansions) turn the whole word into "" — we can't safely
-// match against something we can't see.
+// parts (subshells, arithmetic, anything computed) turn the whole word into
+// "" — we can't safely match against something we can't see.
+//
+// A plain variable reference is the exception: it renders back as its own
+// source text, so `rm $HOME/notes.md` reaches the matcher as "$HOME/notes.md"
+// and hits the dangerous-path rule that already names $HOME. Without this the
+// rule is unreachable through the AST and only `~` is ever caught.
 func literalOf(w *syntax.Word) string {
 	var b strings.Builder
 	for _, part := range w.Parts {
@@ -127,12 +114,25 @@ func literalOf(w *syntax.Word) string {
 			b.WriteString(p.Value)
 		case *syntax.SglQuoted:
 			b.WriteString(p.Value)
+		case *syntax.ParamExp:
+			name := plainParamName(p)
+			if name == "" {
+				return ""
+			}
+			b.WriteString("$" + name)
 		case *syntax.DblQuoted:
 			// double-quoted: concat inner literals; give up on any dynamic bit.
 			for _, inner := range p.Parts {
-				if lit, ok := inner.(*syntax.Lit); ok {
-					b.WriteString(lit.Value)
-				} else {
+				switch q := inner.(type) {
+				case *syntax.Lit:
+					b.WriteString(q.Value)
+				case *syntax.ParamExp:
+					name := plainParamName(q)
+					if name == "" {
+						return ""
+					}
+					b.WriteString("$" + name)
+				default:
 					return ""
 				}
 			}
@@ -141,6 +141,20 @@ func literalOf(w *syntax.Word) string {
 		}
 	}
 	return b.String()
+}
+
+// plainParamName returns the variable name for a bare $NAME / ${NAME}, or ""
+// for anything carrying an operator (${x:-y}, ${x#p}, ${a[i]}, ${#x}). Those
+// compute a value we have no way to predict, so they stay opaque.
+func plainParamName(p *syntax.ParamExp) string {
+	if p == nil || p.Param == nil {
+		return ""
+	}
+	if p.Excl || p.Length || p.Width || p.Exp != nil ||
+		p.Index != nil || p.Slice != nil || p.Repl != nil || p.Names != 0 {
+		return ""
+	}
+	return p.Param.Value
 }
 
 var envAssignRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
@@ -153,8 +167,20 @@ func isEnvAssignment(s string) bool {
 // rest are its arguments (literals only — see extractWords). Returns the
 // human-readable reason on hit.
 func matchDestructive(words []string) (string, bool) {
+	return matchDestructiveAt(words, 0)
+}
+
+func matchDestructiveAt(words []string, depth int) (string, bool) {
 	cmd := filepath.Base(words[0])
 	args := words[1:]
+
+	// Wrappers first. `ls | xargs rm -rf`, `bash -c "rm -rf /"` and
+	// `find . -exec rm -rf {} \;` all park a harmless token in words[0] and
+	// carry the real command in the arguments, so matching words[0] alone
+	// walks them straight past the wall. Unwrap and judge the inner command.
+	if reason, bad := matchWrapped(cmd, args, depth); bad {
+		return reason, true
+	}
 
 	switch cmd {
 	case "sudo", "su", "doas":
@@ -209,6 +235,194 @@ func matchDestructive(words []string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// wrapperSpec describes how to skip a wrapper's own arguments to reach the
+// command it will run.
+type wrapperSpec struct {
+	// valueFlags consume a separate following argument (xargs -I {}).
+	// Attached forms (-I{}, --max-args=3) are handled generically.
+	valueFlags map[string]bool
+	// skipPositionals counts non-flag arguments belonging to the wrapper
+	// itself before the inner command starts — timeout's duration.
+	skipPositionals int
+	// skipAssignments consumes leading VAR=value pairs, as env takes them.
+	skipAssignments bool
+}
+
+// execWrappers run the arguments that follow them as a command in their own
+// right. sudo / su / doas are deliberately absent: they are already flagged
+// destructive on sight, so there is nothing left to learn from unwrapping.
+var execWrappers = map[string]wrapperSpec{
+	"xargs": {valueFlags: map[string]bool{
+		"-I": true, "-i": true, "-n": true, "-L": true, "-P": true,
+		"-s": true, "-a": true, "-d": true, "-E": true,
+		"--replace": true, "--max-args": true, "--max-procs": true,
+		"--max-lines": true, "--delimiter": true, "--arg-file": true,
+	}},
+	"nohup": {},
+	"nice":  {valueFlags: map[string]bool{"-n": true, "--adjustment": true}},
+	"timeout": {
+		valueFlags: map[string]bool{
+			"-s": true, "--signal": true, "-k": true, "--kill-after": true,
+		},
+		skipPositionals: 1,
+	},
+	"env": {
+		skipAssignments: true,
+		valueFlags: map[string]bool{
+			"-u": true, "--unset": true, "-C": true, "--chdir": true, "-S": true,
+		},
+	},
+	"stdbuf":   {valueFlags: map[string]bool{"-i": true, "-o": true, "-e": true}},
+	"setsid":   {},
+	"ionice":   {valueFlags: map[string]bool{"-c": true, "-n": true, "-p": true}},
+	"chroot":   {skipPositionals: 1},
+	"time":     {},
+	"watch":    {valueFlags: map[string]bool{"-n": true, "-d": true}},
+	"parallel": {valueFlags: map[string]bool{"-j": true, "-n": true}},
+}
+
+// shellWrappers take a command STRING via -c and interpret it themselves, so
+// the payload has to go back through the parser rather than be treated as
+// tokens.
+var shellWrappers = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true,
+}
+
+// matchWrapped checks the command hidden inside a wrapper invocation.
+func matchWrapped(cmd string, args []string, depth int) (string, bool) {
+	if depth >= maxUnwrapDepth {
+		// Refuse rather than descend. A wrapper we decline to look inside is
+		// exactly the case the wall exists for.
+		if shellWrappers[cmd] || isExecWrapper(cmd) || cmd == "find" {
+			return "wrapper nesting too deep to analyse: " + cmd, true
+		}
+		return "", false
+	}
+
+	if shellWrappers[cmd] {
+		script := shellStringArg(args)
+		if script == "" {
+			return "", false
+		}
+		if bad, reason := classifyShellCommandAt(script, depth+1); bad {
+			return cmd + " -c → " + reason, true
+		}
+		return "", false
+	}
+
+	if spec, ok := execWrappers[cmd]; ok {
+		inner := innerOfExecWrapper(spec, args)
+		if len(inner) == 0 {
+			return "", false
+		}
+		if reason, bad := matchDestructiveAt(inner, depth+1); bad {
+			return cmd + " → " + reason, true
+		}
+		return "", false
+	}
+
+	if cmd == "find" {
+		inner := findExecInner(args)
+		if len(inner) == 0 {
+			return "", false
+		}
+		if reason, bad := matchDestructiveAt(inner, depth+1); bad {
+			return "find -exec → " + reason, true
+		}
+	}
+
+	return "", false
+}
+
+func isExecWrapper(cmd string) bool {
+	_, ok := execWrappers[cmd]
+	return ok
+}
+
+// shellStringArg pulls the argument of -c out of a shell invocation.
+// Combined short flags are honoured too: `bash -lc "..."` is as valid as
+// `bash -c "..."`.
+func shellStringArg(args []string) string {
+	for i, a := range args {
+		if !strings.HasPrefix(a, "-") || a == "-" || a == "--" {
+			continue
+		}
+		if strings.HasPrefix(a, "--") {
+			continue
+		}
+		if strings.ContainsRune(a[1:], 'c') && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// innerOfExecWrapper skips the wrapper's own flags and positionals and
+// returns the remaining tokens — the command it is about to run.
+func innerOfExecWrapper(spec wrapperSpec, args []string) []string {
+	i := 0
+	skipped := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "--" {
+			i++
+			break
+		}
+		if spec.skipAssignments && isEnvAssignment(a) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			// --flag=value / -I{} carry their value inline; a bare
+			// value-taking flag eats the next token.
+			if strings.ContainsRune(a, '=') {
+				i++
+				continue
+			}
+			if spec.valueFlags[a] {
+				i += 2
+				continue
+			}
+			if len(a) > 2 && spec.valueFlags[a[:2]] {
+				i++
+				continue
+			}
+			i++
+			continue
+		}
+		if skipped < spec.skipPositionals {
+			skipped++
+			i++
+			continue
+		}
+		break
+	}
+	if i >= len(args) {
+		return nil
+	}
+	return args[i:]
+}
+
+// findExecInner returns the command tokens of a find action. The action runs
+// from just after -exec up to the terminating ';' or '+'. The terminator
+// reaches us as ";" when the shell escape was consumed by the parser and as
+// "\\;" when it survived, so both spellings are accepted.
+func findExecInner(args []string) []string {
+	for i, a := range args {
+		switch a {
+		case "-exec", "-execdir", "-ok", "-okdir":
+			rest := args[i+1:]
+			for j, t := range rest {
+				if t == ";" || t == `\;` || t == "+" {
+					return rest[:j]
+				}
+			}
+			return rest
+		}
+	}
+	return nil
 }
 
 // matchRm flags recursive removes and any rm targeting well-known dangerous
@@ -342,6 +556,15 @@ func matchGit(args []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// IsDangerousPath reports whether a path is one of the well-known targets
+// that must never be removed on the agent's own initiative. Exported for
+// effect derivation, which applies the same bar to the rm TOOL that the
+// shell wall applies to `rm` on a command line — the two should not disagree
+// about what counts as irreversible.
+func IsDangerousPath(target string) bool {
+	return isDangerousPathTarget(target)
 }
 
 // isDangerousPathTarget catches literal targets that shouldn't be blown

@@ -10,6 +10,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/browserbridge"
 	"github.com/guyi-a/Interview-Agent/internal/agent/browseruse"
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
+	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/rag/retriever"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
@@ -31,10 +32,15 @@ type Deps struct {
 	SearchService *websearch.Service
 }
 
-// Builtin returns the full set of tools wired up with the given deps.
-// Caller passes this slice to agent.NewReActAgent.
-func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
+// Builtin returns the full set of tools wired up with the given deps, plus
+// the effect registry describing what each of them does.
+//
+// The two travel together because they have to agree: the approval policy
+// reads effects only, so a tool built here without a deriver derives to
+// KindUnknown and prompts the user on every single call.
+func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, *effect.Registry, error) {
 	out := []tool.BaseTool{}
+	reg := effect.NewRegistry()
 
 	timeTool, err := utils.InferTool(
 		"get_current_time",
@@ -42,23 +48,24 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 		currentTime,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out = append(out, timeTool)
 
 	askTool, err := newAskUserTool()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out = append(out, askTool)
 
 	wsTool, err := NewCreateWorkspaceTool(d.WorkspaceRoot, d.ProjectRepo, d.ConversationRepo)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out = append(out, wsTool)
 
 	fs := &fsDeps{projectRepo: d.ProjectRepo, convRepo: d.ConversationRepo}
+	registerEffects(reg, fs)
 	for _, ctor := range []func(*fsDeps) (tool.BaseTool, error){
 		newFileInfoTool,
 		newListFilesTool,
@@ -76,7 +83,7 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	} {
 		t, err := ctor(fs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, t)
 	}
@@ -84,11 +91,11 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	if d.BrowserUseMgr != nil {
 		installTool, err := newBrowserUseInstallTool()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		bu, err := newBrowserUseTool(d.BrowserUseMgr, d.ConversationRepo, d.ProjectRepo)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, installTool, bu)
 	}
@@ -96,7 +103,7 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	if d.BridgeService != nil {
 		bb, err := newBrowserBridgeTool(d.BridgeService)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, bb)
 	}
@@ -104,7 +111,7 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	if d.SkillLoader != nil {
 		ls, err := newLoadSkillTool(d.SkillLoader)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, ls)
 	}
@@ -112,7 +119,7 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	if d.RAGRetriever != nil {
 		rag, err := newRAGSearchTool(d.RAGRetriever)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, rag)
 	}
@@ -122,18 +129,18 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, error) {
 	if d.SearchService != nil {
 		ws, err := newWebSearchTool(d.SearchService)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, ws)
 	}
 
 	wf, err := newWebFetchTool()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out = append(out, wf)
 
-	return out, nil
+	return out, reg, nil
 }
 
 // --- get_current_time ---

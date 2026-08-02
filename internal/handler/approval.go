@@ -40,8 +40,9 @@ type pendingApprovalItem struct {
 	Kind          string `json:"kind"` // approval | question
 	InterruptID   string `json:"interrupt_id"`
 	CallID        string `json:"call_id,omitempty"`
-	Tool          string `json:"tool,omitempty"`         // 仅 kind=approval
-	ArgsJSON      string `json:"args_json,omitempty"`    // kind=approval：工具参数 JSON
+	Tool          string `json:"tool,omitempty"`           // 仅 kind=approval
+	ArgsJSON      string `json:"args_json,omitempty"`      // kind=approval：工具参数 JSON
+	EffectJSON    string `json:"effect_json,omitempty"`    // kind=approval：审批依据的 effect，老数据为空
 	QuestionsJSON string `json:"questions_json,omitempty"` // kind=question：[]hitl.Question 的 JSON
 }
 
@@ -64,6 +65,7 @@ func (h *ApprovalHandler) Pending(c *gin.Context) {
 		default:
 			row.Tool = it.Tool
 			row.ArgsJSON = it.Args
+			row.EffectJSON = it.EffectJSON
 		}
 		out = append(out, row)
 	}

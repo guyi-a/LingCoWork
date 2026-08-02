@@ -7,8 +7,10 @@ import { useApprovalStore, type PendingApproval } from "@/features/chat/approval
 // React in a maximum-update-depth loop.
 const EMPTY: PendingApproval[] = [];
 
-// Human-readable label for each tool we currently prompt on. Extend this map
-// when adding a tool to policy.NeedsApproval.
+// Human-readable label for each builtin tool we prompt on. A tool that isn't
+// listed falls back to its effect kind, which is how a tool this frontend has
+// never heard of — an MCP server's — still gets a card that says what it does
+// instead of showing a bare identifier.
 const TOOL_TITLES: Record<string, string> = {
   write_file: "写入文件",
   edit_file: "修改文件",
@@ -16,16 +18,94 @@ const TOOL_TITLES: Record<string, string> = {
   write_file_chunked: "写入长文件",
   rm: "删除",
   mv: "移动 / 重命名",
+  cp: "复制",
   run_command: "执行命令",
+  read_file: "读取文件",
+  list_files: "列出目录",
+  file_info: "查看文件信息",
+  extract_document_text: "提取文档文本",
+};
+
+const EFFECT_TITLES: Record<string, string> = {
+  "filesystem-read": "读取文件",
+  "filesystem-write": "写入文件",
+  "filesystem-structure": "创建目录",
+  "filesystem-transfer": "移动 / 复制文件",
+  "process-exec": "执行命令",
+  "network-request": "访问网络",
+  "skill-load": "加载技能",
+  "readonly-query": "只读查询",
+  unknown: "未知操作",
+};
+
+// Mirrors internal/effect.Effect. Every field is optional because only the
+// ones relevant to the kind are populated, and because an older backend can
+// send a shape this build doesn't know about.
+type Effect = {
+  kind?: string;
+  scope?: string;
+  path?: string;
+  path_scope?: string;
+  dest_path?: string;
+  dest_scope?: string;
+  destructive?: boolean;
+  command?: string;
+  cwd?: string;
+  classification?: string;
+  url?: string;
+  agent?: string;
+  note?: string;
 };
 
 const REASON_MAX = 500;
 
-// One-line summary of a tool call's arguments. Aims for signal density under
-// ~80 chars: enough for the user to recognise the operation without unfolding
-// the raw JSON.
-function summarize(tool: string, argsJson: string): string {
-  if (!argsJson) return "";
+function parseEffect(effectJson: string | undefined): Effect | null {
+  if (!effectJson) return null;
+  try {
+    const parsed = JSON.parse(effectJson) as Effect;
+    return parsed && typeof parsed === "object" && parsed.kind ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Describes a call from its effect alone, with no knowledge of the tool. This
+// is the path an MCP tool takes.
+function summarizeEffect(e: Effect): string {
+  switch (e.kind) {
+    case "process-exec":
+      return e.cwd ? `${e.command ?? ""} · cwd=${e.cwd}` : (e.command ?? "");
+    case "network-request":
+      return e.url ?? e.note ?? "";
+    case "filesystem-transfer": {
+      const src = scopeTag(e.path, e.path_scope);
+      const dst = scopeTag(e.dest_path, e.dest_scope);
+      return src && dst ? `${src} → ${dst}` : src || dst;
+    }
+    case "skill-load":
+      return e.note ?? "";
+    default:
+      return scopeTag(e.path, e.scope) || e.note || "";
+  }
+}
+
+// Marks a path that leaves the workspace. The distinction is the whole reason
+// external reads reach this card at all, so it has to be visible.
+function scopeTag(path: string | undefined, scope: string | undefined): string {
+  if (!path) return "";
+  return scope === "external" ? `${path}（工作区外）` : path;
+}
+
+// One-line summary of a builtin tool call's arguments. Aims for signal
+// density under ~80 chars: enough for the user to recognise the operation
+// without unfolding the raw JSON.
+//
+// Returns null for a tool it has no case for, rather than guessing from a
+// path-ish field. Guessing would beat the effect to the punch and produce a
+// worse line — a bare path with no indication of whether it leaves the
+// workspace or what is about to happen to it.
+function summarize(tool: string, argsJson: string): string | null {
+  if (!argsJson) return null;
   let args: Record<string, unknown> = {};
   try {
     args = JSON.parse(argsJson) as Record<string, unknown>;
@@ -65,19 +145,35 @@ function summarize(tool: string, argsJson: string): string {
       const cwd = typeof args.cwd === "string" ? args.cwd : "";
       return cwd ? `${cmd} · cwd=${cwd}` : cmd;
     }
-    default: {
-      // Best-effort fallback: any path-ish field
-      for (const key of ["path", "target", "file", "name"]) {
-        const v = args[key];
-        if (typeof v === "string" && v) return v;
-      }
-      return "";
-    }
+    default:
+      return null;
   }
 }
 
-function toolTitle(tool: string): string {
-  return TOOL_TITLES[tool] ?? tool;
+// Last resort when neither a tool case nor an effect produced anything:
+// scrape any path-ish field. Reached by approvals persisted before effects
+// existed, for a tool with no case above.
+function summarizeAnyArgs(argsJson: string): string {
+  if (!argsJson) return "";
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(argsJson) as Record<string, unknown>;
+  } catch {
+    return "";
+  }
+  for (const key of ["path", "target", "file", "src", "url", "command", "name"]) {
+    const v = args[key];
+    if (typeof v === "string" && v) return v;
+  }
+  return "";
+}
+
+function toolTitle(tool: string, effect: Effect | null): string {
+  const known = TOOL_TITLES[tool];
+  if (known) return known;
+  if (effect?.kind === "delegate-agent") return `委派 ${effect.agent ?? tool}`;
+  const byKind = effect?.kind ? EFFECT_TITLES[effect.kind] : undefined;
+  return byKind ? `${byKind} · ${tool}` : tool;
 }
 
 export function ApprovalBar({
@@ -102,10 +198,21 @@ export function ApprovalBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const current: PendingApproval | undefined = pending[0];
-  const summary = useMemo(
-    () => (current ? summarize(current.tool, current.argsJson) : ""),
-    [current],
+  const effect = useMemo(
+    () => parseEffect(current?.effectJson),
+    [current?.effectJson],
   );
+  // The per-tool summary comes first for the builtins: it's tuned to each
+  // one's arguments and reads better than the generic form. The effect covers
+  // everything else, including tools this build has never seen.
+  const summary = useMemo(() => {
+    if (!current) return "";
+    const byTool = summarize(current.tool, current.argsJson);
+    if (byTool) return byTool;
+    const byEffect = effect ? summarizeEffect(effect) : "";
+    if (byEffect) return byEffect;
+    return summarizeAnyArgs(current.argsJson);
+  }, [current, effect]);
 
   // Reset local state whenever the visible pending item changes — otherwise
   // a reason typed for tool A would leak into the prompt for tool B.
@@ -157,8 +264,18 @@ export function ApprovalBar({
           <div className="flex items-center gap-2.5">
             <ShieldIcon />
             <span className="text-[15px] font-semibold text-ink">
-              {toolTitle(current.tool)}
+              {toolTitle(current.tool, effect)}
             </span>
+            {effect?.destructive && (
+              <span className="rounded bg-red-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-red-700">
+                不可撤销
+              </span>
+            )}
+            {effect?.kind === "unknown" && (
+              <span className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                未知工具
+              </span>
+            )}
             {pending.length > 1 && (
               <span className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-muted tabular-nums">
                 1/{pending.length}

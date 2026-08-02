@@ -16,6 +16,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
 	"github.com/guyi-a/Interview-Agent/internal/agent/toolerr"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
+	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 )
 
@@ -59,12 +60,36 @@ func NewInterviewADKAgent(
 	projectRepo *repository.ProjectRepo,
 	approvalModes *approval.ModeStore,
 	classifier *approval.Classifier,
+	effects *effect.Registry,
 ) (*ADKBundle, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("ToolCallingChatModel is nil")
 	}
+	if effects == nil {
+		return nil, fmt.Errorf("effect registry is nil: without it every tool call derives to unknown and prompts the user")
+	}
 	supervisorInstruction := prompts.WithSkillsIndex(prompts.Supervisor, skillLoader)
 	deepResearchInstruction := prompts.WithSkillsIndex(prompts.DeepResearch, skillLoader)
+
+	// A sub-agent invoked as a tool has no side effect of its own — whatever
+	// it goes on to do passes through its own copy of the approval middleware
+	// below. Without these registrations each delegation would derive to
+	// unknown and open with an approval card, which is a prompt for nothing.
+	for _, name := range []string{
+		DeepResearchAgentName, JobSearchAgentName,
+		ResumeAnalyzerAgentName, QuestionPlannerAgentName,
+	} {
+		effects.Register(name, effect.Static(effect.Effect{
+			Kind:  effect.KindDelegate,
+			Agent: name,
+		}))
+	}
+
+	// One middleware value for every agent in the topology. Constructing it
+	// per agent would work today and drift tomorrow: a change made at one of
+	// five call sites would leave the other four judging calls by the old
+	// rules, and the sub-agents are exactly where that would go unnoticed.
+	approvalMW := approval.Middleware(approvalModes, classifier, effects)
 
 	// runtime middleware：每次 agent 运行开始时把当前 workspace 状态拼进 instruction。
 	// 所有 sub-agent 共用同一个实例（无状态），保证主 agent 和 sub-agent 看到的
@@ -90,7 +115,7 @@ func NewInterviewADKAgent(
 				// interrupt errors through, but the correct order avoids
 				// relying on that safety net.
 				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approval.Middleware(approvalModes, classifier),
+					approvalMW,
 					toolerr.Middleware(),
 				},
 			},
@@ -114,7 +139,7 @@ func NewInterviewADKAgent(
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: baseTools,
 				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approval.Middleware(approvalModes, classifier),
+					approvalMW,
 					toolerr.Middleware(),
 				},
 			},
@@ -137,7 +162,7 @@ func NewInterviewADKAgent(
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: baseTools,
 				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approval.Middleware(approvalModes, classifier),
+					approvalMW,
 					toolerr.Middleware(),
 				},
 			},
@@ -162,7 +187,7 @@ func NewInterviewADKAgent(
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: baseTools,
 				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approval.Middleware(approvalModes, classifier),
+					approvalMW,
 					toolerr.Middleware(),
 				},
 			},
@@ -189,7 +214,7 @@ func NewInterviewADKAgent(
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: supervisorTools,
 				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approval.Middleware(approvalModes, classifier),
+					approvalMW,
 					toolerr.Middleware(),
 				},
 			},

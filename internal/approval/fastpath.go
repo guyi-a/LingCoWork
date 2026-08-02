@@ -9,88 +9,26 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// IsSafeAuto is the auto-mode fast path: rule-based recogniser for the
-// obviously-boring subset of gated calls. Returning true skips both the LLM
-// classifier and the human prompt.
+// pathIsSensitive returns (reason, true) for paths the LLM should look at
+// instead of the fast path silently approving them. Everything checked here
+// is CHEAP — no filesystem access, purely string-level.
 //
-// Scope today covers only the three write tools that NeedsApproval gates.
-// A call qualifies as "safe auto" when every one of these holds:
-//   - path is a plain relative path (no leading '/', '~', absolute Windows
-//     drive, or ".." traversal)
-//   - basename doesn't match a sensitive file pattern (.env, ssh keys,
-//     cloud creds, .git/, etc.)
-//   - content (for write_file / write_file_chunked) doesn't contain
-//     credential signatures within the first 4 KiB
-//
-// Anything unrecognised returns false and falls through to the LLM
-// classifier (or, if the classifier is disabled, human review). Callers
-// should never treat a false as "unsafe" — it just means "we don't have
-// a cheap deterministic answer".
-//
-// The reason string is for logs only, not for the model.
-func IsSafeAuto(name, argsJSON string) (bool, string) {
-	switch name {
-	case "write_file", "edit_file":
-		return isSafeWriteLike(argsJSON, /*hasContent=*/ name == "write_file")
-	case "write_file_chunked":
-		// chunked writes only reach approval on mode=start (see policy.go);
-		// treat the first chunk's content like a normal write. mode!=start
-		// shouldn't hit this middleware, but be defensive.
-		if chunkedMode(argsJSON) != "start" {
-			return false, "chunked non-start reached auto path"
-		}
-		return isSafeWriteLike(argsJSON, /*hasContent=*/ true)
-	case "run_command":
-		return isSafeShellCommand(argsJSON)
-	default:
-		return false, "no fast-path rule for tool"
-	}
-}
-
-func isSafeWriteLike(argsJSON string, hasContent bool) (bool, string) {
-	var probe struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil {
-		return false, "unparseable args"
-	}
-	path := strings.TrimSpace(probe.Path)
+// This used to also reject absolute paths, home-prefixed paths and `..`
+// traversal. Those are gone because the effect's Scope now answers the same
+// question by actually resolving the path against the workspace root, which
+// is both stricter (a relative path that climbs out is caught) and less
+// blunt (an absolute path pointing INTO the workspace is no longer treated
+// as an escape).
+func pathIsSensitive(path string) (string, bool) {
+	path = strings.TrimSpace(path)
 	if path == "" {
-		return false, "empty path"
+		return "empty path", true
 	}
-	if reason, ok := pathIsUnsafe(path); ok {
-		return false, reason
-	}
-	if hasContent {
-		if reason, ok := contentLooksSensitive(probe.Content); ok {
-			return false, reason
-		}
-	}
-	return true, "workspace_relative"
-}
-
-// pathIsUnsafe returns (reason, true) for paths the LLM should look at
-// instead of the fast path silently approving them. Everything checked
-// here is CHEAP — no filesystem access, purely string-level.
-func pathIsUnsafe(path string) (string, bool) {
-	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "~") {
-		return "absolute or home-prefixed path", true
-	}
-	// Windows-style absolute (C:\, D:\) — belt and braces even though we're
-	// nominally macOS-only.
-	if len(path) >= 2 && path[1] == ':' {
-		return "windows absolute path", true
-	}
+	// Some names are load-bearing enough that we don't want an auto-approve
+	// to slip past even inside the workspace. Match whole segments, so
+	// "docs/env-setup.md" isn't flagged.
 	cleaned := filepath.ToSlash(filepath.Clean(path))
-	if strings.HasPrefix(cleaned, "../") || cleaned == ".." {
-		return "path traversal", true
-	}
-	// Even inside workspace, some basenames are load-bearing enough that we
-	// don't want an auto-approve to slip past. Full segments (not substring
-	// matches) so "docs/env-setup.md" isn't flagged.
-	segments := strings.Split(cleaned, "/")
-	for _, seg := range segments {
+	for _, seg := range strings.Split(cleaned, "/") {
 		if reason, hit := sensitiveSegment(seg); hit {
 			return reason, true
 		}
@@ -189,7 +127,15 @@ func isSafeShellCommand(argsJSON string) (bool, string) {
 	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil {
 		return false, "unparseable args"
 	}
-	cmd := strings.TrimSpace(probe.Command)
+	return isReadOnlyShellCommand(probe.Command)
+}
+
+// isReadOnlyShellCommand is the same judgment over a raw command string.
+// Split out from isSafeShellCommand so callers holding the command already —
+// effect derivation, ClassifyShellCommand — don't have to marshal it back
+// into an arguments blob just to get it parsed again.
+func isReadOnlyShellCommand(command string) (bool, string) {
+	cmd := strings.TrimSpace(command)
 	if cmd == "" {
 		return false, "empty command"
 	}
@@ -328,24 +274,24 @@ func isReadOnlyInvocation(words []string) (bool, string) {
 }
 
 var gitReadOnlySubcommands = map[string]bool{
-	"status":     true,
-	"log":        true,
-	"show":       true,
-	"diff":       true,
-	"blame":      true,
-	"branch":     true, // listing; -D / -d would delete — see below
-	"describe":   true,
-	"rev-parse":  true,
-	"remote":     true,
-	"config":     true, // read-only listing without value arg — we don't try to prove that here; leaving it out is safer
-	"ls-files":   true,
-	"ls-tree":    true,
-	"cat-file":   true,
-	"tag":        true, // listing; -d would delete
-	"stash":      true, // 'stash' alone lists; 'stash push' writes — conservative below
-	"reflog":     true,
-	"shortlog":   true,
-	"fsck":       true,
+	"status":    true,
+	"log":       true,
+	"show":      true,
+	"diff":      true,
+	"blame":     true,
+	"branch":    true, // listing; -D / -d would delete — see below
+	"describe":  true,
+	"rev-parse": true,
+	"remote":    true,
+	"config":    true, // read-only listing without value arg — we don't try to prove that here; leaving it out is safer
+	"ls-files":  true,
+	"ls-tree":   true,
+	"cat-file":  true,
+	"tag":       true, // listing; -d would delete
+	"stash":     true, // 'stash' alone lists; 'stash push' writes — conservative below
+	"reflog":    true,
+	"shortlog":  true,
+	"fsck":      true,
 }
 
 func isReadOnlyGit(args []string) (bool, string) {

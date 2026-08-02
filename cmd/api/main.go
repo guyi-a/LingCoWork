@@ -130,7 +130,7 @@ func main() {
 	}
 	log.Printf("skills: 释放到 %s", skillLoader.RootPath())
 
-	ts, err := tools.Builtin(ctx, tools.Deps{
+	ts, effects, err := tools.Builtin(ctx, tools.Deps{
 		WorkspaceRoot:    absWorkspaceRoot,
 		ProjectRepo:      projectRepo,
 		ConversationRepo: convRepo,
@@ -144,7 +144,7 @@ func main() {
 		log.Fatalf("tools.Builtin: %v", err)
 	}
 
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/guyi-a/Interview-Agent/internal/config"
+	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/llmhttp"
 )
 
@@ -63,23 +64,29 @@ type ClassifierVerdict struct {
 // (missing key, timeout, bad JSON). A non-nil err always accompanies
 // Approved=false — callers can treat err simply as extra context.
 //
-// workspaceDir is embedded in the prompt so the model can reason about
-// path scope. Empty string is fine ("(not initialized)" is shown to the
-// model).
-func (c *Classifier) Classify(ctx context.Context, toolName, argsJSON, workspaceDir string) (ClassifierVerdict, error) {
+// The effect leads and the raw arguments follow as context. That ordering is
+// the point of the whole refactor: the effect states the consequence in one
+// vocabulary with paths already resolved and scope already decided, so the
+// model doesn't have to learn each tool's argument schema to judge a call.
+// An MCP server's tool arrives here looking exactly like a builtin one.
+//
+// It also fixes a quieter bug. The workspace directory used to be passed in
+// separately and every caller passed "", so the model was told the workspace
+// was uninitialised and then asked to reason about path scope against it.
+// Scope now arrives precomputed and correct.
+func (c *Classifier) Classify(ctx context.Context, toolName string, e effect.Effect, argsJSON string) (ClassifierVerdict, error) {
 	if c == nil {
 		return ClassifierVerdict{Reason: "classifier_disabled"}, llmhttp.ErrNoAPIKey
 	}
-	args := truncateArgs(argsJSON)
 	userPrompt := fmt.Sprintf(classifierUserTemplate,
-		orDefault(workspaceDir, "(not initialized)"),
+		e.JSON(),
 		toolName,
-		args,
+		truncateArgs(argsJSON),
 	)
 	raw, err := c.client.Chat(ctx, c.model, []llmhttp.Message{
 		{Role: "system", Content: classifierSystemPrompt},
 		{Role: "user", Content: userPrompt},
-	}, c.maxTokens, /*jsonMode=*/ true)
+	}, c.maxTokens /*jsonMode=*/, true)
 	if err != nil {
 		reason := "classifier_error"
 		switch {
@@ -199,9 +206,19 @@ const classifierSystemPrompt = `You are a security classifier for an AI coding a
 
 ## Path scope rules
 
-- Actions within the workspace or user-granted paths are always allowed (if non-destructive).
-- Read-only access outside the workspace (ls, cat, head, tail, find, grep, stat, wc, file, du, df, etc.) is ALLOWED — reading files outside the workspace is safe as long as it does not touch sensitive data (credentials, secrets, etc.).
-- Write or destructive operations outside the workspace are BLOCKED — these include creating, modifying, deleting, or moving files outside the workspace.
+The Effect tells you the scope of every path. Trust it: paths are already
+resolved to absolute form and compared against the real workspace root, so do
+not try to re-derive scope from the raw arguments.
+
+- "scope": "workspace" — inside the workspace. Non-destructive actions here are always allowed.
+- "scope": "external" — outside the workspace.
+- For a transfer (mv / cp), "path_scope" and "dest_scope" give each end separately, and "scope" is the worse of the two.
+
+Rules:
+
+- Reading outside the workspace is ALLOWED as long as the target is not sensitive data (credentials, secrets, keys, browser profiles).
+- Writing, moving, or deleting outside the workspace is BLOCKED.
+- Copying INTO the workspace from outside is allowed; copying workspace content OUT to an external path is BLOCKED — it moves the user's data somewhere they didn't ask for.
 
 ## BLOCK criteria (any one is sufficient)
 
@@ -229,10 +246,10 @@ Reply with a JSON object only, no markdown code fence:
 
 const classifierUserTemplate = `Classify this tool call:
 
-Environment:
-- Workspace: %s
+Effect (authoritative — paths are resolved and scope is already decided):
+%s
 
-Action:
-- Tool: %s
-- Arguments:
+Tool: %s
+
+Raw arguments (supporting context only, may be truncated):
 %s`
