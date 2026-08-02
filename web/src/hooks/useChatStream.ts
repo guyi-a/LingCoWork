@@ -21,8 +21,15 @@ export type ToolCall = {
   error?: string;
 };
 
-// One ReAct iteration: tools for that iteration + assistant text. Reasoning
-// is merged on ChatTurn across all iterations.
+// One ReAct iteration: what the assistant said, then the tools it called off
+// the back of it. Reasoning is merged on ChatTurn across all iterations.
+//
+// The two fields are ordered: `content` always comes BEFORE `tools`. That is
+// not a layout preference, it is the shape of an assistant message — content
+// precedes tool_calls, and tool_calls end the message, so a segment can never
+// hold text that came after its own tools. Nothing in this type enforces it,
+// which is exactly how the renderer once drew tools first and made a reload
+// disagree with the live stream. Anything consuming a segment must respect it.
 export type ReactSegment = {
   content: string;
   tools: ToolCall[];

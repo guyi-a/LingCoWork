@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { formatClock, cn } from "@/lib/utils";
-import type { ChatTurn, SubAgentEvent, ToolCall } from "@/hooks/useChatStream";
+import type {
+  ChatTurn,
+  ReactSegment,
+  SubAgentEvent,
+  ToolCall,
+} from "@/hooks/useChatStream";
 import { MessageBody } from "./MessageBody";
 import { UserAttachmentChips } from "./UserAttachmentChips";
 import { parseAttachmentMarkers } from "@/features/chat/attachments-store";
@@ -256,6 +261,25 @@ function groupConsecutiveTools(tools: ToolCall[]): ToolRow[] {
   return rows;
 }
 
+// renderSegments 给出一个回合要画的 ReAct 段落。
+//
+// 段内顺序是固定的：先文本，后工具。这不是排版偏好，是协议决定的——一条
+// assistant 消息里 content 必然先于 tool_calls，tool_calls 一出现该消息就结束
+// 了。直播和刷新的切段粒度不同（直播把没有文本间隔的多次调用堆进同一段，刷新
+// 则每条 assistant 行独立成段），但只要段内守住这个顺序，两条链路画出来的先后
+// 就是一致的。
+function renderSegments(turn: ChatTurn): ReactSegment[] {
+  if (turn.segments.length > 0) return turn.segments;
+  // 老数据没有 segments：content 是整个回合文本的拼接，tools 是它调过的全部
+  // 工具，交错关系当时就没存下来。对这种形状，"工具在前、结论在后"是唯一还
+  // 原得出的读法，所以摊成两段交给同一套渲染顺序，而不是在下面加分支。
+  const legacy = [
+    { content: "", tools: turn.tools },
+    { content: turn.content, tools: [] as ToolCall[] },
+  ].filter((seg) => seg.content !== "" || seg.tools.length > 0);
+  return legacy.length > 0 ? legacy : [{ content: "", tools: [] }];
+}
+
 // aggregateStatus 汇总一组同名工具的整体状态：任何错误 → error；任何
 // running → running；任何 pending → pending；否则 ok。cancelled 归入 ok
 // 以免整组"部分取消"闪红。
@@ -338,13 +362,24 @@ export function TranscriptEntry({
       )}
 
       {turn.role === "assistant"
-        ? (turn.segments.length > 0
-            ? turn.segments
-            : [{ content: turn.content, tools: turn.tools }]
-          ).map((seg, segIdx, segs) => {
+        ? renderSegments(turn).map((seg, segIdx, segs) => {
             const isLastSeg = segIdx === segs.length - 1;
             return (
               <div key={`seg-${segIdx}`}>
+                {seg.content ? (
+                  <div className="text-ink">
+                    <MessageBody
+                      content={seg.content}
+                      streaming={streaming && isLastSeg}
+                    />
+                  </div>
+                ) : (
+                  streaming &&
+                  isLastSeg &&
+                  seg.tools.length === 0 && (
+                    <span className="text-muted">…</span>
+                  )
+                )}
                 {seg.tools.length > 0 && (
                   <div className="my-4 space-y-3">
                     {groupConsecutiveTools(seg.tools).map((row) => {
@@ -368,20 +403,6 @@ export function TranscriptEntry({
                       );
                     })}
                   </div>
-                )}
-                {seg.content ? (
-                  <div className="text-ink">
-                    <MessageBody
-                      content={seg.content}
-                      streaming={streaming && isLastSeg}
-                    />
-                  </div>
-                ) : (
-                  streaming &&
-                  isLastSeg &&
-                  seg.tools.length === 0 && (
-                    <span className="text-muted">…</span>
-                  )
                 )}
               </div>
             );
