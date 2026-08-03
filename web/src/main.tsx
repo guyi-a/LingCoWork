@@ -6,6 +6,7 @@ import { App } from "@/App";
 import { Home } from "@/routes/home";
 import { Conversation } from "@/routes/conversation";
 import { Connectors } from "@/routes/connectors";
+import { SkillHub } from "@/routes/skillhub";
 
 const router = createBrowserRouter([
   {
@@ -15,6 +16,7 @@ const router = createBrowserRouter([
       { index: true, Component: Home },
       { path: "c/:id", Component: Conversation },
       { path: "settings/connectors", Component: Connectors },
+      { path: "settings/skillhub", Component: SkillHub },
     ],
   },
 ]);

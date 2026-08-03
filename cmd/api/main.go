@@ -29,6 +29,7 @@ import (
 	ragstore "github.com/guyi-a/Interview-Agent/internal/rag/store"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/service"
+	"github.com/guyi-a/Interview-Agent/internal/skillhub"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
 )
@@ -129,7 +130,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("skills.NewLoader: %v", err)
 	}
-	log.Printf("skills: 释放到 %s", skillLoader.RootPath())
+	log.Printf("skills: 释放到 %s，用户技能目录 %s", skillLoader.RootPath(), skillLoader.UserDir())
+
+	// Skill Hub：连内网 kskill 注册中心的技能市场。安装目录就是 loader 的
+	// 用户技能目录，装完 SkillsIndexMiddleware 下一轮 Refresh 就能看到。
+	// 分类用主模型归类，结果缓存在 data/ 下；分类失败前端隐藏分类栏。
+	skillHubRegistry := skillhub.NewRegistry("")
+	skillHubSvc := skillhub.NewService(
+		skillHubRegistry,
+		skillLoader.UserDir(),
+		skillLoader.ReservedBuiltinNames,
+	)
+	skillHubCats := skillhub.NewCategories(
+		skillHubRegistry,
+		filepath.Join(filepath.Dir(dbPath), "skillhub-categories.json"),
+		skillhub.NewModelClassifier(cm),
+	)
+	log.Printf("skillhub: registry=%s install_dir=%s", skillHubRegistry.Base(), skillLoader.UserDir())
 
 	ts, effects, err := tools.Builtin(ctx, tools.Deps{
 		WorkspaceRoot:    absWorkspaceRoot,
@@ -188,6 +205,7 @@ func main() {
 	projectHandler := handler.NewProjectHandler(projectService)
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
 	mcpHandler := handler.NewMCPHandler(mcpMgr)
+	skillHubHandler := handler.NewSkillHubHandler(skillHubSvc, skillHubCats)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
@@ -197,6 +215,7 @@ func main() {
 	projectHandler.Register(r)
 	workspaceHandler.Register(r)
 	mcpHandler.Register(r)
+	skillHubHandler.Register(r)
 	browserbridge.Register(r, bridgeSvc)
 
 	srv := &http.Server{Addr: addr, Handler: r}

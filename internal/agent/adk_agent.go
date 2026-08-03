@@ -82,8 +82,8 @@ func NewInterviewADKAgent(
 	if effects == nil {
 		return nil, fmt.Errorf("effect registry is nil: without it every tool call derives to unknown and prompts the user")
 	}
-	supervisorInstruction := prompts.WithSkillsIndex(prompts.Supervisor, skillLoader)
-	deepResearchInstruction := prompts.WithSkillsIndex(prompts.DeepResearch, skillLoader)
+	supervisorInstruction := prompts.Supervisor
+	deepResearchInstruction := prompts.DeepResearch
 
 	// A sub-agent invoked as a tool has no side effect of its own — whatever
 	// it goes on to do passes through its own copy of the approval middleware
@@ -109,6 +109,10 @@ func NewInterviewADKAgent(
 	// 所有 sub-agent 共用同一个实例（无状态），保证主 agent 和 sub-agent 看到的
 	// workspace 视图一致。
 	workspaceMW := runtimectx.NewWorkspaceMiddleware(convRepo, projectRepo)
+
+	// Skills 索引改成每轮注入（而不是构建时烤进 instruction）：Skill Hub 装完
+	// 的技能下一轮就能出现在索引里。所有 agent 共用一个实例。
+	skillsMW := runtimectx.NewSkillsIndexMiddleware(skillLoader)
 
 	// Only the supervisor gets this one — see the dynamicTools doc above.
 	dynamicToolsMW := runtimectx.NewDynamicToolsMiddleware(dynamicTools)
@@ -137,6 +141,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
+		Handlers: []adk.ChatModelAgentMiddleware{skillsMW},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deep.New: %w", err)
@@ -150,7 +155,7 @@ func NewInterviewADKAgent(
 	jobAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        JobSearchAgentName,
 		Description: "招聘信息搜索员：所有招聘/岗位/求职/找工作/Boss直聘类任务的**唯一入口**，supervisor 遇到这类请求必须走这里，不要自己调 browser_bridge 或 browser_use 硬走。给 request 传用户意图（岗位方向、城市、级别、想要几个），我会加载 bosszp skill、检查登录、抓取、返回结构化职位列表。",
-		Instruction: prompts.WithSkillsIndex(prompts.JobSearch, skillLoader),
+		Instruction: prompts.JobSearch,
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -161,6 +166,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -173,7 +179,7 @@ func NewInterviewADKAgent(
 	resumeAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        ResumeAnalyzerAgentName,
 		Description: "求职者简历自评员。当用户（求职者）说'帮我看看这份简历怎么样'、'面 XX 岗合适吗'、'分析下我的简历跟 JD 的匹配度'时委派。传 request 说明简历路径 + JD（文本或路径）+ 目标岗位。会产出 reports/self_review.md（自评报告，用'你'称呼用户），返回路径。不要用于纯读文件、跟简历无关的技术问答。",
-		Instruction: prompts.WithSkillsIndex(prompts.ResumeAnalyzer, skillLoader),
+		Instruction: prompts.ResumeAnalyzer,
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -184,7 +190,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW},
 		MaxIterations: 30,
 	})
 	if err != nil {
@@ -198,7 +204,7 @@ func NewInterviewADKAgent(
 	plannerAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        QuestionPlannerAgentName,
 		Description: "求职者面试模拟题生成员。当用户（求职者）说'根据我简历给我出些题练练'、'准备一套模拟面试题'、'给我一份复习题'时委派。传 request 说明简历自评报告路径 + JD + 可选偏好（题量/难度）。会产出 reports/questions/ 目录下多个 md（basic/experience/design/README）并返回索引路径。前置：必须先跑 resume_analyzer 生成自评报告。",
-		Instruction: prompts.WithSkillsIndex(prompts.QuestionPlanner, skillLoader),
+		Instruction: prompts.QuestionPlanner,
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -209,7 +215,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -240,7 +246,7 @@ func NewInterviewADKAgent(
 			// Runner's iter so the UI can show real-time progress.
 			EmitInternalEvents: true,
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW, dynamicToolsMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW, dynamicToolsMW},
 		MaxIterations: 50,
 	})
 	if err != nil {

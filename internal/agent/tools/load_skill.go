@@ -31,14 +31,16 @@ func newLoadSkillTool(loader *skills.Loader) (tool.BaseTool, error) {
 	if loader == nil {
 		return nil, errors.New("load_skill: loader is nil")
 	}
-	names := loader.Names()
+	// 可用技能名单不烤进 description：技能集是动态的（Skill Hub 随时装卸），
+	// 而工具 schema 在 agent 首轮就冻结了。名单交给系统提示词里的 Skills 目录
+	// （每轮由 SkillsIndexMiddleware 重新注入），错误提示则现查 loader。
 	desc := "Load a skill: returns its instruction body plus its on-disk directory path. " +
 		"Call this the moment a user request matches a skill's trigger description — its body carries the exact " +
 		"tool syntax, discipline, and failure recipes for that task. " +
 		"The skill directory may contain additional files (REFERENCE.md, FORMS.md, etc.) — read them with read_file as needed. " +
 		"If the skill has a scripts/ subdirectory, run its scripts via `run_command uv run <scripts_path>/xxx.py <args>`. " +
 		"Do NOT modify files inside the skill directory — copy to workspace/scripts/ first if you need to customize. " +
-		"Currently available: " + strings.Join(names, ", ") + "."
+		"The system prompt's Skills 目录 section lists what is currently available."
 	return utils.InferTool("load_skill", desc, func(ctx context.Context, in *loadSkillInput) (*loadSkillOutput, error) {
 		if in.Name == "" {
 			return &loadSkillOutput{OK: false, Message: "name is required"}, nil
@@ -47,7 +49,7 @@ func newLoadSkillTool(loader *skills.Loader) (tool.BaseTool, error) {
 		if err != nil {
 			return &loadSkillOutput{
 				OK:      false,
-				Message: fmt.Sprintf("skill %q not found; available: %s", in.Name, strings.Join(names, ", ")),
+				Message: fmt.Sprintf("skill %q not found; available: %s", in.Name, strings.Join(loader.Names(), ", ")),
 			}, nil
 		}
 		out := &loadSkillOutput{

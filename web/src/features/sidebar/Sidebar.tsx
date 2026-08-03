@@ -122,6 +122,22 @@ export function Sidebar() {
 
       <footer className="shrink-0 border-t border-rule/60 p-2">
         <NavLink
+          to="/settings/skillhub"
+          title="技能市场"
+          className={({ isActive }) =>
+            [
+              "flex h-10 items-center rounded-xl text-[14px] transition-colors hover:bg-rule/70 hover:text-ink",
+              collapsed ? "justify-center" : "gap-3 px-3",
+              isActive ? "text-ink" : "text-muted",
+            ].join(" ")
+          }
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <SparkIcon />
+          </span>
+          {!collapsed && <span className="truncate">技能市场</span>}
+        </NavLink>
+        <NavLink
           to="/settings/connectors"
           title="连接器"
           className={({ isActive }) =>
@@ -139,6 +155,26 @@ export function Sidebar() {
         </NavLink>
       </footer>
     </aside>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" />
+    </svg>
   );
 }
 

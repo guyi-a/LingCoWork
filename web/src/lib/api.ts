@@ -399,6 +399,140 @@ export async function deleteMCPServer(name: string): Promise<void> {
   throw new Error(data?.error ?? `deleteMCPServer: ${res.status}`);
 }
 
+// ---- Skill Hub（内网 kskill 注册中心）----
+// 注册中心不返回 CORS 头，浏览器不能直连，所有读操作都经后端转发。
+
+export type SkillHubSkill = {
+  id: string;
+  scope?: string;
+  slug: string;
+  fullSlug: string;
+  name: string;
+  description?: string;
+  owner?: string;
+  tags?: string[];
+  isTeam?: boolean;
+  isEditorPick?: boolean;
+  hotness?: { installs?: number; downloads?: number };
+  latestVersion?: string;
+  updatedAt?: string;
+};
+
+export type SkillHubAuthorProfile = {
+  username: string;
+  displayName?: string;
+  avatarUrl?: string;
+};
+
+export type SkillHubPage = {
+  items: SkillHubSkill[];
+  authorProfiles: Record<string, SkillHubAuthorProfile>;
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+export type SkillHubVersion = {
+  version: string;
+  changelog?: string;
+  bundleSize?: number;
+  isLatest?: boolean;
+  createdAt?: string;
+};
+
+export type SkillHubInstalled = {
+  name: string;
+  fullSlug: string;
+  version?: string;
+  directory: string;
+};
+
+export type SkillHubCategoryCount = { id: string; count: number };
+
+async function skillHubJSON<T>(res: Response, what: string): Promise<T> {
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? `${what}: ${res.status}`);
+  return data as T;
+}
+
+export async function listSkillHubSkills(params: {
+  q?: string;
+  category?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<SkillHubPage> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);
+  if (params.category) qs.set("category", params.category);
+  qs.set("page", String(params.page ?? 1));
+  qs.set("pageSize", String(params.pageSize ?? 20));
+  const res = await fetch(`${API_BASE}/skillhub/skills?${qs}`);
+  return skillHubJSON<SkillHubPage>(res, "listSkillHubSkills");
+}
+
+// 分类由模型离线归类；分类器不可用时后端返回错误，调用方隐藏分类栏即可。
+export async function getSkillHubCategories(): Promise<
+  SkillHubCategoryCount[]
+> {
+  const res = await fetch(`${API_BASE}/skillhub/categories`);
+  const data = await skillHubJSON<{ categories: SkillHubCategoryCount[] }>(
+    res,
+    "getSkillHubCategories",
+  );
+  return data.categories;
+}
+
+export async function getSkillHubReadme(fullSlug: string): Promise<string> {
+  const res = await fetch(
+    `${API_BASE}/skillhub/skill/readme?slug=${encodeURIComponent(fullSlug)}`,
+  );
+  const data = await skillHubJSON<{ content: string }>(res, "getSkillHubReadme");
+  return data.content;
+}
+
+export async function getSkillHubVersions(
+  fullSlug: string,
+): Promise<SkillHubVersion[]> {
+  const res = await fetch(
+    `${API_BASE}/skillhub/skill/versions?slug=${encodeURIComponent(fullSlug)}`,
+  );
+  const data = await skillHubJSON<{ versions: SkillHubVersion[] }>(
+    res,
+    "getSkillHubVersions",
+  );
+  return data.versions;
+}
+
+export async function listSkillHubInstalled(): Promise<SkillHubInstalled[]> {
+  const res = await fetch(`${API_BASE}/skillhub/installed`);
+  const data = await skillHubJSON<{ installed: SkillHubInstalled[] }>(
+    res,
+    "listSkillHubInstalled",
+  );
+  return data.installed;
+}
+
+export async function installSkillHubSkill(
+  fullSlug: string,
+  version?: string,
+): Promise<SkillHubInstalled> {
+  const res = await fetch(`${API_BASE}/skillhub/install`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fullSlug, version }),
+  });
+  return skillHubJSON<SkillHubInstalled>(res, "installSkillHubSkill");
+}
+
+export async function uninstallSkillHubSkill(fullSlug: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/skillhub/uninstall`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fullSlug }),
+  });
+  await skillHubJSON<unknown>(res, "uninstallSkillHubSkill");
+}
+
 export type WorkspaceTreeEntry = {
   path: string;
   name: string;
