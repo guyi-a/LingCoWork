@@ -24,6 +24,7 @@ import { useQuestionStore, type PendingQuestion } from "@/features/chat/question
 import { electronAPI } from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
+import type { Instruction } from "@/lib/api";
 
 // Stable empty array — Zustand selector must return the same ref when the
 // store hasn't changed, otherwise useSyncExternalStore loops (same trick
@@ -46,9 +47,14 @@ export function Conversation() {
 
   const location = useLocation();
   const state = location.state as
-    | { pending?: string; projectId?: string }
+    | {
+        pending?: string;
+        pendingInstruction?: Instruction;
+        projectId?: string;
+      }
     | null;
   const pending = state?.pending;
+  const pendingInstruction = state?.pendingInstruction;
   const conversationProjectId = useConversationStore(
     (s) => s.items.find((item) => item.id === id)?.project_id ?? undefined,
   );
@@ -114,16 +120,28 @@ export function Conversation() {
   // The actual send, shared by the composer and the queue flusher. Takes
   // text with attachment markers already baked in.
   const dispatch = useCallback(
-    async (finalText: string) => {
-      touch(id, previewOf(finalText), { projectId });
-      await send(finalText);
-      refreshConvs();
-      refreshProjects();
+    async (
+      finalText: string,
+      instruction?: Pick<Instruction, "name" | "label">,
+    ) => {
+      touch(
+        id,
+        finalText.trim()
+          ? previewOf(finalText)
+          : instruction?.label ?? "快捷指令",
+        { projectId },
+      );
+      const sent = await send(finalText, instruction);
+      if (sent) {
+        refreshConvs();
+        refreshProjects();
+      }
+      return sent;
     },
     [id, projectId, touch, send, refreshConvs, refreshProjects],
   );
 
-  const onSend = async (text: string) => {
+  const onSend = async (text: string, instruction?: Instruction) => {
     // Snapshot then clear so the chip strip disappears in the same paint
     // the user's message renders in the transcript. If the send throws we
     // don't restore — the attachments are already visible in the sent
@@ -140,10 +158,16 @@ export function Conversation() {
     if (files.length > 0) clearAttachments(id);
 
     if (busy) {
-      enqueue(id, finalText);
+      enqueue(
+        id,
+        finalText,
+        instruction
+          ? { name: instruction.name, label: instruction.label }
+          : undefined,
+      );
       return;
     }
-    await dispatch(finalText);
+    await dispatch(finalText, instruction);
   };
 
   useQueueFlush({
@@ -220,12 +244,12 @@ export function Conversation() {
   const pendingFiredRef = useRef(false);
   useEffect(() => {
     if (loading) return;
-    if (!pending) return;
+    if (pending === undefined && !pendingInstruction) return;
     if (pendingFiredRef.current) return;
     pendingFiredRef.current = true;
     window.history.replaceState({}, "");
-    onSend(pending);
-  }, [loading, pending]);
+    onSend(pending ?? "", pendingInstruction);
+  }, [loading, pending, pendingInstruction]);
 
   if (loading) {
     return (

@@ -7,6 +7,8 @@ import {
   resumeChat,
   type MessageHistory,
   type PersistedMessage,
+  type Instruction,
+  type UserInstructionSnapshot,
 } from "@/lib/api";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useApprovalStore } from "@/features/chat/approval-store";
@@ -74,6 +76,7 @@ export type ChatTurn = {
   totalTokens?: number;
   // Wall-clock time from the user hitting send to the run finishing.
   durationMs?: number;
+  instruction?: UserInstructionSnapshot;
 };
 
 type Frame = {
@@ -388,13 +391,15 @@ function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
       return {
         id: `db-${r.seq}`,
         role: "user" as const,
-        content: r.content,
+        content:
+          (r.user_instruction ?? r.instruction)?.raw_input ?? r.content,
         reasoning: "",
         tools: [],
         segments: [],
         subEvents: [],
         createdAt: r.created_at,
         done: true,
+        instruction: r.user_instruction ?? r.instruction,
       };
     });
 }
@@ -965,10 +970,13 @@ export function useChatStream(
   }, [conversationID, runStreamingResponse]);
 
   const send = useCallback(
-    async (text: string) => {
-      if (streaming) return;
+    async (
+      text: string,
+      instruction?: Pick<Instruction, "name" | "label">,
+    ) => {
+      if (streaming) return false;
       const trimmed = text.trim();
-      if (!trimmed) return;
+      if (!trimmed && !instruction) return false;
 
       const startedAtMs = Date.now();
       const nowIso = new Date(startedAtMs).toISOString();
@@ -982,6 +990,13 @@ export function useChatStream(
         subEvents: [],
         createdAt: nowIso,
         done: true,
+        instruction: instruction
+          ? {
+              name: instruction.name,
+              label: instruction.label,
+              raw_input: trimmed,
+            }
+          : undefined,
       };
       const assistantTurn: ChatTurn = {
         id: `a-${nowIso}`,
@@ -1005,6 +1020,7 @@ export function useChatStream(
       try {
         res = await postChat(conversationID, trimmed, controller.signal, {
           projectId: projectIdRef.current,
+          instruction: instruction ? { name: instruction.name } : undefined,
         });
       } catch (err) {
         if ((err as { name?: string }).name === "AbortError") {
@@ -1027,10 +1043,11 @@ export function useChatStream(
         }
         setStreaming(false);
         if (abortRef.current === controller) abortRef.current = null;
-        return;
+        return false;
       }
 
       await runStreamingResponse(res, assistantTurn.id, controller, startedAtMs);
+      return true;
     },
     [conversationID, streaming, runStreamingResponse],
   );

@@ -68,7 +68,136 @@ export type PersistedMessage = {
   total_tokens?: number;
   compaction_id?: number;
   replaced_count?: number;
+  instruction?: UserInstructionSnapshot;
+  user_instruction?: UserInstructionSnapshot;
 };
+
+export type Instruction = {
+  name: string;
+  label: string;
+  description: string;
+  prompt: string;
+};
+
+export type InstructionInput = {
+  name?: string;
+  label: string;
+  description: string;
+  prompt: string;
+};
+
+export type InstructionRef = {
+  name: string;
+};
+
+export type UserInstructionSnapshot = {
+  name: string;
+  label: string;
+  raw_input: string;
+};
+
+async function instructionJSON<T>(res: Response, what: string): Promise<T> {
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail =
+      data && typeof data === "object" && "error" in data
+        ? String((data as { error?: unknown }).error)
+        : `${what}: ${res.status}`;
+    throw new Error(detail);
+  }
+  return data as T;
+}
+
+function instructionFromPayload(
+  data: Instruction | { instruction?: Instruction },
+): Instruction {
+  const item: Instruction | undefined =
+    "instruction" in data ? data.instruction : (data as Instruction);
+  if (!item) throw new Error("instruction response is empty");
+  return {
+    name: item.name,
+    label: item.label,
+    description: item.description ?? "",
+    prompt: item.prompt ?? "",
+  };
+}
+
+export async function listInstructions(): Promise<Instruction[]> {
+  const res = await fetch(`${API_BASE}/instructions`);
+  const data = await instructionJSON<
+    Instruction[] | { instructions?: Instruction[] }
+  >(res, "listInstructions");
+  const items = Array.isArray(data) ? data : (data.instructions ?? []);
+  return items.map((item) => ({
+    name: item.name,
+    label: item.label,
+    description: item.description ?? "",
+    prompt: item.prompt ?? "",
+  }));
+}
+
+export async function getInstruction(name: string): Promise<Instruction> {
+  const res = await fetch(
+    `${API_BASE}/instructions/${encodeURIComponent(name)}`,
+  );
+  const data = await instructionJSON<
+    Instruction | { instruction?: Instruction }
+  >(res, "getInstruction");
+  return instructionFromPayload(data);
+}
+
+export async function createInstruction(
+  input: InstructionInput,
+): Promise<Instruction> {
+  const res = await fetch(`${API_BASE}/instructions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (res.status === 204) {
+    if (!input.name) throw new Error("createInstruction: missing name");
+    return { ...input, name: input.name };
+  }
+  const data = await instructionJSON<
+    Instruction | { instruction?: Instruction }
+  >(res, "createInstruction");
+  return instructionFromPayload(data);
+}
+
+export async function updateInstruction(
+  name: string,
+  input: InstructionInput,
+): Promise<Instruction> {
+  const res = await fetch(
+    `${API_BASE}/instructions/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  if (res.status === 204) {
+    return { ...input, name: input.name ?? name };
+  }
+  const data = await instructionJSON<
+    Instruction | { instruction?: Instruction }
+  >(res, "updateInstruction");
+  return instructionFromPayload(data);
+}
+
+export async function deleteInstruction(name: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/instructions/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (res.ok || res.status === 204) return;
+  const data = await res.json().catch(() => null);
+  throw new Error(
+    data && typeof data === "object" && "error" in data
+      ? String((data as { error?: unknown }).error)
+      : `deleteInstruction: ${res.status}`,
+  );
+}
 
 export async function listConversations(): Promise<ConversationItem[]> {
   const res = await fetch(`${API_BASE}/conversations`);
@@ -152,17 +281,31 @@ export async function postChat(
   id: string,
   message: string,
   signal: AbortSignal,
-  opts?: { projectId?: string },
+  opts?: { projectId?: string; instruction?: InstructionRef },
 ): Promise<Response> {
   const qs = opts?.projectId
     ? `?project_id=${encodeURIComponent(opts.projectId)}`
     : "";
-  return fetch(`${API_BASE}/chat/${encodeURIComponent(id)}${qs}`, {
+  const res = await fetch(`${API_BASE}/chat/${encodeURIComponent(id)}${qs}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      ...(opts?.instruction ? { instruction: opts.instruction } : {}),
+    }),
     signal,
   });
+  if (!res.ok) {
+    let detail = `chat: ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) detail = body.error;
+    } catch {
+      // Keep the status fallback when an intermediary returns a non-JSON body.
+    }
+    throw new Error(detail);
+  }
+  return res;
 }
 
 export async function resumeChat(

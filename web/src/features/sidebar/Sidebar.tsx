@@ -122,6 +122,22 @@ export function Sidebar() {
 
       <footer className="shrink-0 border-t border-rule/60 p-2">
         <NavLink
+          to="/settings/instructions"
+          title="快捷指令"
+          className={({ isActive }) =>
+            [
+              "flex h-10 items-center rounded-xl text-[14px] transition-colors hover:bg-rule/70 hover:text-ink",
+              collapsed ? "justify-center" : "gap-3 px-3",
+              isActive ? "text-ink" : "text-muted",
+            ].join(" ")
+          }
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <InstructionIcon />
+          </span>
+          {!collapsed && <span className="truncate">快捷指令</span>}
+        </NavLink>
+        <NavLink
           to="/settings/skillhub"
           title="技能市场"
           className={({ isActive }) =>
@@ -196,6 +212,26 @@ function PlugIcon() {
       <path d="M15 2v6" />
       <path d="M6 8h12v3a6 6 0 0 1-12 0V8z" />
       <path d="M12 17v5" />
+    </svg>
+  );
+}
+
+function InstructionIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <path d="M6 3h9l3 3v15H6z" />
+      <path d="M14 3v4h4M9 11h6M9 15h6" />
     </svg>
   );
 }

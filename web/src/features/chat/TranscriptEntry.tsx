@@ -9,6 +9,7 @@ import type {
 import { MessageBody } from "./MessageBody";
 import { UserAttachmentChips } from "./UserAttachmentChips";
 import { parseAttachmentMarkers } from "@/features/chat/attachments-store";
+import { InstructionIcon } from "./InstructionPicker";
 
 function CopyIcon() {
   return (
@@ -430,12 +431,20 @@ export function TranscriptEntry({
             return (
               <>
                 <div className="text-ink rounded-2xl bg-subtle px-4 py-3">
+                  {turn.instruction && (
+                    <div className="mb-2 flex w-fit max-w-full items-center gap-1.5 rounded-full border border-rule bg-paper/70 px-2.5 py-1 text-xs text-ink">
+                      <InstructionIcon className="size-3.5 shrink-0 text-accent" />
+                      <span className="truncate">{turn.instruction.label}</span>
+                    </div>
+                  )}
                   {attachments.length > 0 && (
                     <UserAttachmentChips attachments={attachments} />
                   )}
                   {text ? (
                     <MessageBody content={text} streaming={streaming} />
-                  ) : attachments.length === 0 && streaming ? (
+                  ) : attachments.length === 0 &&
+                    !turn.instruction &&
+                    streaming ? (
                     <span className="text-muted">…</span>
                   ) : null}
                 </div>

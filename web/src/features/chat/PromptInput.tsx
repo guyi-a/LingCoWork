@@ -8,6 +8,16 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import {
+  listInstructions,
+  type Instruction,
+} from "@/lib/api";
+import {
+  InstructionIcon,
+  InstructionPicker,
+} from "./InstructionPicker";
+
+const PICKER_NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "Enter"]);
 
 // A card-style composer: unadorned textarea sits inside a rounded border
 // that tracks focus, with a small toolbar row at the bottom. Behaviour
@@ -42,7 +52,7 @@ export function PromptInput({
   blocked?: boolean;
   // Called on submit regardless of `streaming`. It's the caller's job to
   // decide between sending now and queueing.
-  onSend: (text: string) => void;
+  onSend: (text: string, instruction?: Instruction) => void;
   onCancel: () => void;
   // Bottom-left toolbar cluster. Typically the attach `+` button.
   leftActions?: ReactNode;
@@ -66,8 +76,56 @@ export function PromptInput({
   onImageFiles?: (files: File[]) => void;
 }) {
   const [text, setText] = useState("");
+  const [instructions, setInstructions] = useState<Instruction[]>([]);
+  const [instructionsLoading, setInstructionsLoading] = useState(false);
+  const [selectedInstruction, setSelectedInstruction] = useState<Instruction>();
+  const [manualPickerOpen, setManualPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const pickerCommandRef = useRef<HTMLDivElement>(null);
+
+  const slashQuery = /^\/(\S*)$/.exec(text)?.[1];
+  const slashPickerOpen = slashQuery !== undefined;
+  const pickerOpen = slashPickerOpen || manualPickerOpen;
+  const filteredInstructions = slashPickerOpen
+    ? instructions.filter((instruction) => {
+        const query = slashQuery.toLowerCase();
+        return (
+          instruction.name.toLowerCase().includes(query) ||
+          instruction.label.toLowerCase().includes(query) ||
+          instruction.description.toLowerCase().includes(query)
+        );
+      })
+    : instructions;
+
+  useEffect(() => {
+    let active = true;
+    setInstructionsLoading(true);
+    void listInstructions()
+      .then((items) => {
+        if (active) setInstructions(items);
+      })
+      .catch((err) => {
+        console.error("[instructions] list failed:", err);
+      })
+      .finally(() => {
+        if (active) setInstructionsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!manualPickerOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!cardRef.current?.contains(event.target as Node)) {
+        setManualPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [manualPickerOpen]);
 
   // Auto-resize: reset to `auto` first so shrinking works, then match
   // scrollHeight. The min-height / max-height are enforced by CSS below.
@@ -78,14 +136,18 @@ export function PromptInput({
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
-  const canSend = (text.trim().length > 0 || hasAttachments) && !blocked;
+  const canSend =
+    (text.trim().length > 0 || hasAttachments || !!selectedInstruction) &&
+    !blocked;
 
   const submit = () => {
     const t = text.trim();
-    if (!t && !hasAttachments) return;
+    if (!t && !hasAttachments && !selectedInstruction) return;
     if (blocked) return;
-    onSend(t);
+    onSend(t, selectedInstruction);
     setText("");
+    setSelectedInstruction(undefined);
+    setManualPickerOpen(false);
     // Reset height explicitly — the effect will re-run on next render but
     // clearing here avoids a flash of the old height between paints.
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -95,6 +157,37 @@ export function PromptInput({
     // While an IME is composing (e.g. picking a Chinese candidate) Enter
     // must select the candidate, not submit the message.
     if (e.nativeEvent.isComposing) return;
+
+    if (
+      e.key === "Backspace" &&
+      text.length === 0 &&
+      selectedInstruction
+    ) {
+      e.preventDefault();
+      setSelectedInstruction(undefined);
+      return;
+    }
+    if (pickerOpen && e.key === "Escape") {
+      e.preventDefault();
+      if (slashPickerOpen) setText("");
+      setManualPickerOpen(false);
+      return;
+    }
+    if (
+      slashPickerOpen &&
+      filteredInstructions.length > 0 &&
+      PICKER_NAVIGATION_KEYS.has(e.key)
+    ) {
+      e.preventDefault();
+      pickerCommandRef.current?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: e.key,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      return;
+    }
 
     const isEnter = e.key === "Enter";
     if (!isEnter) return;
@@ -116,7 +209,16 @@ export function PromptInput({
   // itself keep their native behaviour.
   const onCardMouseDown = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
-    if (target.closest("button, textarea, input, a, [role='button']")) return;
+    // cmdk renders selectable rows as role="option", not buttons. Treat the
+    // picker as interactive too; preventing its mousedown would focus the
+    // textarea and cancel the row's click before onSelect can run.
+    if (
+      target.closest(
+        "button, textarea, input, a, [role='button'], [role='option'], [cmdk-item]",
+      )
+    ) {
+      return;
+    }
     e.preventDefault();
     textareaRef.current?.focus();
   };
@@ -171,21 +273,58 @@ export function PromptInput({
           onDragOver={onDragOver}
           onDrop={onDrop}
           className={cn(
-            "cursor-text rounded-xl border border-rule bg-paper transition-shadow",
+            "relative cursor-text rounded-xl border border-rule bg-paper transition-shadow",
             "shadow-[0_1px_2px_rgba(20,30,50,0.03)]",
             "hover:shadow-[0_4px_16px_rgba(20,30,50,0.06)]",
             "focus-within:border-accent",
             "focus-within:shadow-[0_0_0_3px_oklch(0.36_0.10_245/0.12)]",
           )}
         >
+          {pickerOpen && (
+            <InstructionPicker
+              commandRef={pickerCommandRef}
+              instructions={filteredInstructions}
+              loading={instructionsLoading}
+              onClose={() => setManualPickerOpen(false)}
+              onSelect={(instruction) => {
+                setSelectedInstruction(instruction);
+                setManualPickerOpen(false);
+                if (slashPickerOpen) setText("");
+                textareaRef.current?.focus();
+              }}
+              showSearchInput={!slashPickerOpen}
+            />
+          )}
           {topSlot}
+          {selectedInstruction && (
+            <div className="px-3 pt-3">
+              <div className="flex w-fit max-w-full items-center gap-1.5 rounded-full border border-rule bg-subtle/60 px-2.5 py-1 text-xs text-ink">
+                <InstructionIcon className="size-3.5 shrink-0 text-accent" />
+                <span className="truncate">{selectedInstruction.label}</span>
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded-full text-muted hover:bg-rule hover:text-ink"
+                  title="取消快捷指令"
+                  aria-label="取消快捷指令"
+                  onClick={() => setSelectedInstruction(undefined)}
+                >
+                  <XIcon />
+                </button>
+              </div>
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onFocus={() => {
+              if (manualPickerOpen) setManualPickerOpen(false);
+            }}
             onKeyDown={onKey}
             onPaste={onPaste}
+            aria-expanded={slashPickerOpen}
+            aria-controls={slashPickerOpen ? "instruction-picker" : undefined}
             placeholder={
               blocked
                 ? "先回答上面的问题"
@@ -213,6 +352,24 @@ export function PromptInput({
                       : "Enter 发送 · Shift+Enter 换行"}
                 </div>
               )}
+              <button
+                type="button"
+                onClick={() => setManualPickerOpen((open) => !open)}
+                title="选择快捷指令"
+                aria-label="选择快捷指令"
+                aria-expanded={manualPickerOpen}
+                aria-controls={manualPickerOpen ? "instruction-picker" : undefined}
+                aria-haspopup="listbox"
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border border-rule/60 bg-paper px-2 text-[12px] transition-colors",
+                  selectedInstruction
+                    ? "text-accent"
+                    : "text-muted hover:bg-subtle hover:text-ink",
+                )}
+              >
+                <InstructionIcon className="size-3.5" />
+                <span>快捷指令</span>
+              </button>
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
@@ -307,6 +464,22 @@ function StopIcon() {
       aria-hidden="true"
     >
       <rect x="5" y="5" width="14" height="14" rx="1.5" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      className="size-3"
+      aria-hidden
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
     </svg>
   );
 }

@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/service"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 )
@@ -25,7 +27,12 @@ func (h *ChatHandler) Register(r *gin.Engine) {
 }
 
 type chatRequest struct {
-	Message string `json:"message" binding:"required"`
+	Message     string                  `json:"message"`
+	Instruction *chatInstructionRequest `json:"instruction,omitempty"`
+}
+
+type chatInstructionRequest struct {
+	Name string `json:"name"`
 }
 
 func (h *ChatHandler) Chat(c *gin.Context) {
@@ -41,9 +48,29 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.Message == "" && req.Instruction == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message or instruction is required"})
+		return
+	}
+	instructionName := ""
+	if req.Instruction != nil {
+		instructionName = req.Instruction.Name
+		if instructionName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "instruction.name is required"})
+			return
+		}
+	}
 
-	buf, err := h.chat.Start(c.Request.Context(), id, req.Message, c.Query("project_id"))
+	buf, err := h.chat.Start(c.Request.Context(), id, req.Message, instructionName, c.Query("project_id"))
 	if err != nil {
+		if errors.Is(err, instructions.ErrInvalid) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, instructions.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

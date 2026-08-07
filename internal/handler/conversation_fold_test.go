@@ -312,3 +312,47 @@ func TestFoldMessages_LegacySingleRow(t *testing.T) {
 		t.Fatalf("flat=%q tools=%+v", asst.Content, asst.Tools)
 	}
 }
+
+func TestFoldMessages_UserInstructionExposesRawInput(t *testing.T) {
+	now := time.Now()
+	msgs := []model.Message{{
+		Seq:       1,
+		Role:      "user",
+		Content:   "Review this code:\n\npackage main",
+		Extra:     `{"user_instruction":{"name":"review","label":"Code review","raw_input":"package main"}}`,
+		CreatedAt: now,
+	}}
+
+	out := foldMessages(msgs)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1", len(out))
+	}
+	if out[0].Content != msgs[0].Content {
+		t.Fatalf("expanded content changed: %q", out[0].Content)
+	}
+	if out[0].UserInstruction == nil ||
+		out[0].UserInstruction.Name != "review" ||
+		out[0].UserInstruction.Label != "Code review" ||
+		out[0].UserInstruction.RawInput != "package main" {
+		t.Fatalf("instruction metadata = %+v", out[0].UserInstruction)
+	}
+}
+
+func TestFromModelMessage_AssistantExtraStillHydratesWithInstructionSupport(t *testing.T) {
+	now := time.Now()
+	item := fromModelMessage(model.Message{
+		Role:      "assistant",
+		Content:   "done",
+		Extra:     `{"tools":[{"id":"t1","name":"fs","ok":true}],"sub_events":[{"seq":1,"agent":"worker","type":"message"}]}`,
+		CreatedAt: now,
+	})
+	if len(item.Tools) != 1 || item.Tools[0].ID != "t1" {
+		t.Fatalf("tools lost: %+v", item.Tools)
+	}
+	if len(item.SubEvents) != 1 || item.SubEvents[0].Agent != "worker" {
+		t.Fatalf("sub-events lost: %+v", item.SubEvents)
+	}
+	if item.UserInstruction != nil {
+		t.Fatalf("assistant received user instruction metadata: %+v", item.UserInstruction)
+	}
+}

@@ -9,6 +9,7 @@ import {
 } from "@/features/chat/attachments-store";
 import { electronAPI } from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
+import type { Instruction } from "@/lib/api";
 
 // Stable empty array — see attachments-store notes on why the selector
 // must not return a fresh literal each render.
@@ -29,8 +30,10 @@ export function Home() {
   );
   const addAttachments = useAttachmentsStore((s) => s.add);
 
-  const onSend = (text: string) => {
-    navigate(`/c/${draftId}`, { state: { pending: text } });
+  const onSend = (text: string, instruction?: Instruction) => {
+    navigate(`/c/${draftId}`, {
+      state: { pending: text, pendingInstruction: instruction },
+    });
   };
 
   const onPickFiles = useCallback(async () => {

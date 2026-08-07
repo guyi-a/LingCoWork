@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/hitl"
+	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
@@ -27,6 +29,7 @@ type ChatService struct {
 	convRepo      *repository.ConversationRepo
 	msgRepo       *repository.MessageRepo
 	projectRepo   *repository.ProjectRepo
+	instructions  *instructions.Store
 	pending       *approval.PendingStore
 	approvalModes *approval.ModeStore
 	multimodal    bool
@@ -42,6 +45,7 @@ func NewChatService(
 	convRepo *repository.ConversationRepo,
 	msgRepo *repository.MessageRepo,
 	projectRepo *repository.ProjectRepo,
+	instructionStore *instructions.Store,
 	pending *approval.PendingStore,
 	approvalModes *approval.ModeStore,
 	multimodal bool,
@@ -54,6 +58,7 @@ func NewChatService(
 		convRepo:      convRepo,
 		msgRepo:       msgRepo,
 		projectRepo:   projectRepo,
+		instructions:  instructionStore,
 		pending:       pending,
 		approvalModes: approvalModes,
 		multimodal:    multimodal,
@@ -77,13 +82,54 @@ func (s *ChatService) Cancel(id string) bool {
 	return buf.Cancel()
 }
 
+type preparedUserMessage struct {
+	content     string
+	titleSource string
+	extra       string
+}
+
+func (s *ChatService) prepareUserMessage(userMsg, instructionName string) (preparedUserMessage, error) {
+	prepared := preparedUserMessage{content: userMsg, titleSource: userMsg}
+	if instructionName == "" {
+		return prepared, nil
+	}
+	if s.instructions == nil {
+		return prepared, fmt.Errorf("%w: %s", instructions.ErrNotFound, instructionName)
+	}
+	instruction, err := s.instructions.Get(instructionName)
+	if err != nil {
+		return prepared, err
+	}
+	prepared.content = instructions.Expand(instruction.Prompt, userMsg)
+	if prepared.titleSource == "" {
+		prepared.titleSource = instruction.Label
+	}
+	data, err := json.Marshal(instructions.MessageExtra{
+		UserInstruction: &instructions.UserInstruction{
+			Name:     instruction.Name,
+			Label:    instruction.Label,
+			RawInput: userMsg,
+		},
+	})
+	if err != nil {
+		return prepared, fmt.Errorf("marshal instruction metadata: %w", err)
+	}
+	prepared.extra = string(data)
+	return prepared, nil
+}
+
 // Start begins (or continues) a chat turn:
 //   - ensures conversation row exists
 //   - if projectID is provided AND the conversation is new (or unbound), binds it
 //   - loads prior messages as context
 //   - persists the new user message
 //   - kicks off the ADK Runner in a goroutine, persists assistant reply when done
-func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) (*stream.StreamBuffer, error) {
+func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, projectID string) (*stream.StreamBuffer, error) {
+	prepared, err := s.prepareUserMessage(userMsg, instructionName)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := s.convRepo.Upsert(ctx, id); err != nil {
 		return nil, err
 	}
@@ -113,12 +159,13 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) 
 	if err := s.msgRepo.Append(ctx, &model.Message{
 		ConversationID: id,
 		Role:           string(schema.User),
-		Content:        userMsg,
+		Content:        prepared.content,
+		Extra:          prepared.extra,
 	}); err != nil {
 		return nil, err
 	}
 
-	if title := truncateForTitle(userMsg); title != "" {
+	if title := truncateForTitle(prepared.titleSource); title != "" {
 		_ = s.convRepo.SetTitleIfEmpty(ctx, id, title)
 	}
 
@@ -155,7 +202,7 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, projectID string) 
 		if workspaceCtx != "" {
 			history = append([]*schema.Message{schema.SystemMessage(workspaceCtx)}, history...)
 		}
-		history = append(history, multimodal.BuildUserMessage(userMsg, s.multimodal))
+		history = append(history, multimodal.BuildUserMessage(prepared.content, s.multimodal))
 
 		s.runAgent(runCtx, id, history, buf)
 	}()

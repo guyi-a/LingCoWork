@@ -90,6 +90,23 @@ func TestToSchemaMessages_KeepsPairedToolCall(t *testing.T) {
 	}
 }
 
+func TestToSchemaMessages_ReplaysExpandedInstructionSnapshot(t *testing.T) {
+	rows := []model.Message{{
+		Seq:     1,
+		Role:    "user",
+		Content: "Review carefully:\n\npackage main",
+		Extra:   `{"user_instruction":{"name":"review","label":"Review","raw_input":"package main"}}`,
+	}}
+
+	out := toSchemaMessages("c1", rows, false, nil)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1", len(out))
+	}
+	if out[0].Content != rows[0].Content {
+		t.Fatalf("replay content=%q want expanded snapshot %q", out[0].Content, rows[0].Content)
+	}
+}
+
 func roleContents(msgs []*schema.Message) []string {
 	out := make([]string, 0, len(msgs))
 	for _, m := range msgs {

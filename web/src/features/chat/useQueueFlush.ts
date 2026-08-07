@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueueStore, useConversationQueue, useQueuePaused } from "@/features/chat/queue-store";
+import type { Instruction } from "@/lib/api";
 
 // Drains the per-conversation message queue one item at a time, as soon as
 // the conversation is genuinely idle.
@@ -28,7 +29,10 @@ export function useQueueFlush({
   // Last stream error from useChatStream. Non-null pauses the queue rather
   // than feeding the next message into a run that just failed.
   error: string | null;
-  dispatch: (text: string) => Promise<void>;
+  dispatch: (
+    text: string,
+    instruction?: Pick<Instruction, "name" | "label">,
+  ) => Promise<boolean>;
 }) {
   const queued = useConversationQueue(conversationID);
   const paused = useQueuePaused(conversationID);
@@ -64,9 +68,13 @@ export function useQueueFlush({
     setFlushing(true);
 
     dispatchRef
-      .current(next.text)
+      .current(next.text, next.instruction)
+      .then((sent) => {
+        if (!sent) throw new Error("queued message was not sent");
+      })
       .catch((err) => {
         console.error("[queue] flush failed:", err);
+        useQueueStore.getState().restoreFront(conversationID, next);
         useQueueStore.getState().setPaused(conversationID, true);
       })
       .finally(() => {

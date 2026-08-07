@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Instruction } from "@/lib/api";
 
 // 一条排队中的消息。text 是**已经拼好附件标记的最终文本**——附件在入队那一刻
 // 就被 serializeAttachments 冻进正文了，之后用户再改附件也影响不到它。
@@ -6,6 +7,7 @@ export type QueuedMessage = {
   id: string;
   text: string;
   createdAt: number;
+  instruction?: Pick<Instruction, "name" | "label">;
 };
 
 interface QueueStore {
@@ -16,8 +18,13 @@ interface QueueStore {
   // 只有用户点「继续发送」才解除——停止之后立刻被下一条顶上来最惹人烦。
   paused: Record<string, boolean>;
 
-  enqueue: (convId: string, text: string) => void;
+  enqueue: (
+    convId: string,
+    text: string,
+    instruction?: Pick<Instruction, "name" | "label">,
+  ) => void;
   dequeue: (convId: string) => QueuedMessage | undefined;
+  restoreFront: (convId: string, item: QueuedMessage) => void;
   remove: (convId: string, id: string) => void;
   clear: (convId: string) => void;
   setPaused: (convId: string, paused: boolean) => void;
@@ -27,12 +34,13 @@ export const useQueueStore = create<QueueStore>((set, get) => ({
   queues: {},
   paused: {},
 
-  enqueue: (convId, text) => {
+  enqueue: (convId, text, instruction) => {
     const current = get().queues[convId] ?? [];
     const item: QueuedMessage = {
       id: crypto.randomUUID(),
       text,
       createdAt: Date.now(),
+      instruction,
     };
     set({ queues: { ...get().queues, [convId]: [...current, item] } });
   },
@@ -46,6 +54,11 @@ export const useQueueStore = create<QueueStore>((set, get) => ({
     else queues[convId] = rest;
     set({ queues });
     return head;
+  },
+
+  restoreFront: (convId, item) => {
+    const current = get().queues[convId] ?? [];
+    set({ queues: { ...get().queues, [convId]: [item, ...current] } });
   },
 
   remove: (convId, id) => {

@@ -23,6 +23,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/config"
 	"github.com/guyi-a/Interview-Agent/internal/handler"
+	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/mcp"
 	ragembedding "github.com/guyi-a/Interview-Agent/internal/rag/embedding"
 	ragretriever "github.com/guyi-a/Interview-Agent/internal/rag/retriever"
@@ -37,6 +38,7 @@ import (
 const (
 	dbPath          = "data/interview.db"
 	workspaceRoot   = ".workspace"
+	instructionRoot = ".lingcowork/instructions"
 	addr            = ":9001"
 	shutdownTimeout = 5 * time.Second
 )
@@ -46,7 +48,7 @@ func corsMiddleware() gin.HandlerFunc {
 		origin := c.GetHeader("Origin")
 		if origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173" {
 			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Content-Type")
 			c.Header("Access-Control-Max-Age", "600")
 		}
@@ -187,6 +189,7 @@ func main() {
 	}
 
 	manager := stream.NewManager()
+	instructionStore := instructions.NewStore(instructionRoot)
 	pendingApprovals := approval.NewPendingStore(pendingApprovalRepo)
 	if rows, err := pendingApprovalRepo.ListAll(ctx); err != nil {
 		log.Printf("restore pending approvals: %v", err)
@@ -194,7 +197,7 @@ func main() {
 		pendingApprovals.Restore(rows)
 		log.Printf("restored %d pending approval(s) from DB", len(rows))
 	}
-	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, pendingApprovals, approvalModes, cfg.LLM.Multimodal, compactor)
+	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, instructionStore, pendingApprovals, approvalModes, cfg.LLM.Multimodal, compactor)
 	convService := service.NewConversationService(convRepo, msgRepo, compactionRepo, manager, browserMgr)
 	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr, absWorkspaceRoot)
 	workspaceService := service.NewWorkspaceService(convRepo, projectRepo)
@@ -206,6 +209,7 @@ func main() {
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
 	mcpHandler := handler.NewMCPHandler(mcpMgr)
 	skillHubHandler := handler.NewSkillHubHandler(skillHubSvc, skillHubCats)
+	instructionHandler := handler.NewInstructionHandler(instructionStore)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
@@ -216,6 +220,7 @@ func main() {
 	workspaceHandler.Register(r)
 	mcpHandler.Register(r)
 	skillHubHandler.Register(r)
+	instructionHandler.Register(r)
 	browserbridge.Register(r, bridgeSvc)
 
 	srv := &http.Server{Addr: addr, Handler: r}

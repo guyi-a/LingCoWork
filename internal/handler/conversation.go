@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 	"github.com/guyi-a/Interview-Agent/internal/service"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
@@ -97,14 +98,15 @@ type segmentItem struct {
 }
 
 type messageItem struct {
-	Seq              int                 `json:"seq"`
-	Role             string              `json:"role"`
-	Content          string              `json:"content"`
-	ReasoningContent string              `json:"reasoning_content,omitempty"`
-	Tools            []toolEventItem     `json:"tools,omitempty"`
-	Segments         []segmentItem       `json:"segments,omitempty"`
-	SubEvents        []subAgentEventItem `json:"sub_events,omitempty"`
-	CreatedAt        string              `json:"created_at"`
+	Seq              int                           `json:"seq"`
+	Role             string                        `json:"role"`
+	Content          string                        `json:"content"`
+	ReasoningContent string                        `json:"reasoning_content,omitempty"`
+	Tools            []toolEventItem               `json:"tools,omitempty"`
+	Segments         []segmentItem                 `json:"segments,omitempty"`
+	SubEvents        []subAgentEventItem           `json:"sub_events,omitempty"`
+	UserInstruction  *instructions.UserInstruction `json:"user_instruction,omitempty"`
+	CreatedAt        string                        `json:"created_at"`
 
 	// TotalTokens is the provider's own count for the context this turn ran
 	// against — the same number the compaction estimator anchors on, so the
@@ -186,10 +188,14 @@ func fromModelMessage(m model.Message) messageItem {
 	}
 	if m.Extra != "" {
 		var payload struct {
-			Tools     []stream.ToolEventRecord `json:"tools"`
-			SubEvents []stream.SubAgentEvent   `json:"sub_events"`
+			Tools           []stream.ToolEventRecord      `json:"tools"`
+			SubEvents       []stream.SubAgentEvent        `json:"sub_events"`
+			UserInstruction *instructions.UserInstruction `json:"user_instruction"`
 		}
 		if err := json.Unmarshal([]byte(m.Extra), &payload); err == nil {
+			if m.Role == "user" {
+				item.UserInstruction = payload.UserInstruction
+			}
 			// Only hydrate Tools from Extra for LEGACY assistant rows (no
 			// ToolCalls column). New rows have their tool structure in
 			// ToolCalls + separate Role=tool rows, and foldMessages fills

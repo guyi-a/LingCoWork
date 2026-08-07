@@ -62,6 +62,11 @@ export function QueuedMessagesBar({
             const { attachments, text } = parseAttachmentMarkers(item.text);
             return (
               <li key={item.id} className="flex items-center gap-2">
+                {item.instruction && (
+                  <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
+                    {item.instruction.label}
+                  </span>
+                )}
                 {attachments.length > 0 && (
                   <span className="shrink-0 rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-muted tabular-nums">
                     {attachments.length} 个附件
