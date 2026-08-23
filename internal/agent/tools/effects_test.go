@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
 )
 
@@ -37,6 +38,56 @@ func TestScopeOfResolvedPath(t *testing.T) {
 	// No workspace bound means no path can be established as inside one.
 	if got := scopeOfResolvedPath("", "/anything"); got != effect.ScopeExternal {
 		t.Errorf("with no workspace root, got %q, want external", got)
+	}
+}
+
+// The memory gate is a path rule, not a tool-name rule, because the model
+// reaches project memory through the ordinary file tools. If this regresses,
+// nothing breaks loudly: memory writes just start looking like plain workspace
+// writes, which auto mode waves through without showing a card.
+func TestWriteKindRecognisesProjectMemory(t *testing.T) {
+	ws := "/Users/me/.workspace/proj"
+	memoryFile := filepath.Join(ws, "memory.md")
+
+	if got := writeKind(ws, memoryFile); got != effect.KindMemoryWrite {
+		t.Errorf("writeKind(%q) = %q, want %q", memoryFile, got, effect.KindMemoryWrite)
+	}
+
+	ordinary := []string{
+		filepath.Join(ws, "notes.md"),
+		// Only the workspace root counts. A memory.md the agent happens to
+		// write in a subdirectory is just a file.
+		filepath.Join(ws, "reports", "memory.md"),
+		filepath.Join(ws, "memory.md.bak"),
+	}
+	for _, p := range ordinary {
+		if got := writeKind(ws, p); got != effect.KindFileWrite {
+			t.Errorf("writeKind(%q) = %q, want %q", p, got, effect.KindFileWrite)
+		}
+	}
+
+	// No workspace means no project memory to protect, and a path check
+	// against "" must not match everything.
+	if got := writeKind("", "/anywhere/memory.md"); got != effect.KindFileWrite {
+		t.Errorf("with no workspace, writeKind = %q, want %q", got, effect.KindFileWrite)
+	}
+}
+
+// A memory write must not be auto-approved and must not be skippable. These
+// two functions have no case for the kind, so both answers come from their
+// default branches — this test is what says those defaults are load-bearing
+// rather than incidental.
+func TestMemoryWriteIsGatedByPolicy(t *testing.T) {
+	e := effect.Effect{
+		Kind:  effect.KindMemoryWrite,
+		Scope: effect.ScopeWorkspace,
+		Path:  "/Users/me/.workspace/proj/memory.md",
+	}
+	if !approval.NeedsApproval(e) {
+		t.Error("a memory write does not require approval")
+	}
+	if safe, reason := approval.IsSafeAuto(e, `{"content":"- 甲\n"}`); safe {
+		t.Errorf("auto mode fast-path waved through a memory write: %s", reason)
 	}
 }
 

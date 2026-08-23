@@ -11,6 +11,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/browseruse"
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
+	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/rag/retriever"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
@@ -25,6 +26,9 @@ type Deps struct {
 	BrowserUseMgr    *browseruse.Manager
 	BridgeService    *browserbridge.Service
 	SkillLoader      *skills.Loader
+	// UserMemory 可为 nil：nil 时 remember 工具不注册，agent 只能读注入的记忆、
+	// 不能写。项目级记忆不在这里 —— 那份走 write_file，路径由 effects.go 认。
+	UserMemory *memory.Store
 	// RAGRetriever 可为 nil：nil 时 rag_search 工具不注册，agent 感知不到 RAG 存在。
 	RAGRetriever retriever.Retriever
 	// SearchService 可为 nil：nil（用户没配任何 Tavily/Bocha key）时 web_search
@@ -114,6 +118,14 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, *effect.Registry, er
 			return nil, nil, err
 		}
 		out = append(out, ls)
+	}
+
+	if d.UserMemory != nil {
+		rm, err := newRememberTool(d.UserMemory)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, rm)
 	}
 
 	if d.RAGRetriever != nil {

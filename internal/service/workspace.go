@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/guyi-a/Interview-Agent/internal/agent/scope"
+	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 )
 
@@ -113,6 +114,14 @@ func (s *WorkspaceService) resolveWorkspaceFor(ctx context.Context, convID, proj
 	return s.resolveWorkspace(ctx, convID)
 }
 
+// Root exposes the workspace root to callers outside this package that need to
+// locate a file sitting at a known path inside it — project-level memory being
+// the one today. Exported so that resolution stays defined once here instead of
+// being reimplemented next to every such file.
+func (s *WorkspaceService) Root(ctx context.Context, convID, projectID string) (string, string, error) {
+	return s.resolveWorkspaceFor(ctx, convID, projectID)
+}
+
 func (s *WorkspaceService) resolvePath(ctx context.Context, convID, projectID, userPath string) (root, resolvedProjectID, abs string, err error) {
 	root, resolvedProjectID, err = s.resolveWorkspaceFor(ctx, convID, projectID)
 	if err != nil {
@@ -156,6 +165,13 @@ func (s *WorkspaceService) TreeFor(ctx context.Context, convID, projectID string
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
+			return nil
+		}
+		// 项目记忆有自己的编辑入口，在文件树里再列一遍只会让人以为该从这里
+		// 改它 —— 而从这里点进去只有只读预览。注意这个过滤只作用于给界面看的
+		// 树：Agent 的 list_files 走另一条路，它必须还能看见这个文件，否则就
+		// 读不到也写不了项目记忆。
+		if !d.IsDir() && filepath.ToSlash(rel) == memory.FileName {
 			return nil
 		}
 		info, err := d.Info()

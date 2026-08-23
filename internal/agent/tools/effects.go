@@ -10,6 +10,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/scope"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
+	"github.com/guyi-a/Interview-Agent/internal/memory"
 )
 
 // This file is the single place that says what each builtin tool DOES. The
@@ -68,6 +69,32 @@ func registerEffects(reg *effect.Registry, d *fsDeps) {
 
 	// --- skills ---
 	reg.Register("load_skill", loadSkillEffect)
+
+	// --- long-term memory ---
+	// The path is the user-level file, which sits outside every workspace, so
+	// the scope is external by construction. That is the honest answer even
+	// though the policy never consults it for this kind.
+	reg.Register("remember", rememberEffect)
+}
+
+// rememberEffect describes an edit to user-level memory. The tool takes two
+// actions and only one of them is bounded: append adds a line, rewrite can
+// delete everything. Naming the action on the effect is what lets the approval
+// card tell those apart.
+func rememberEffect(_ context.Context, argsJSON string) (effect.Effect, error) {
+	var in rememberInput
+	if err := unmarshalArgs(argsJSON, &in); err != nil {
+		return effect.Effect{}, err
+	}
+	note := "append one entry to user memory"
+	if strings.EqualFold(strings.TrimSpace(in.Action), "rewrite") {
+		note = "replace user memory in full — entries left out are deleted"
+	}
+	return effect.Effect{
+		Kind:  effect.KindMemoryWrite,
+		Scope: effect.ScopeExternal,
+		Note:  note,
+	}, nil
 }
 
 // BuiltinToolNames lists every tool registerEffects covers, in the same order.
@@ -80,7 +107,7 @@ func BuiltinToolNames() []string {
 		"write_file_chunked", "create_workspace",
 		"rm", "mv", "cp",
 		"run_command", "browser_use", "browser_bridge", "browser_use_install",
-		"web_search", "web_fetch", "load_skill",
+		"web_search", "web_fetch", "load_skill", "remember",
 	}
 }
 
@@ -126,26 +153,48 @@ func scopeOfResolvedPath(workspaceRoot, absPath string) effect.Scope {
 // rejects all three and the tool then returns the same error, so the call
 // touches nothing. Calling that "external" would make the user approve a
 // request that was already refused.
-func (d *fsDeps) readTarget(ctx context.Context, path string) (string, effect.Scope, string) {
+// The workspace root comes back for the same reason as writeTarget's: rm and
+// mv can land on the memory file too, and writeKind needs the root to say so.
+func (d *fsDeps) readTarget(ctx context.Context, path string) (string, effect.Scope, string, string) {
 	ws, _ := d.resolveWorkspace(ctx)
 	abs, err := scope.ResolveRead(ws, path)
 	if err != nil {
-		return path, effect.ScopeWorkspace, "path does not resolve: " + err.Error()
+		return path, effect.ScopeWorkspace, "path does not resolve: " + err.Error(), ws
 	}
-	return abs, scopeOfResolvedPath(ws, abs), ""
+	return abs, scopeOfResolvedPath(ws, abs), "", ws
 }
 
 // writeTarget resolves a path the way the confined write tools do. Unlike
 // readTarget, a failure here IS meaningful: scope.Resolve only fails when the
 // write was aimed outside the workspace, and saying so is the honest summary
 // even though the tool will refuse the call on its own.
-func (d *fsDeps) writeTarget(ctx context.Context, path string) (string, effect.Scope, string) {
+//
+// The workspace root comes back too so callers can ask where the target sits
+// relative to it — writeKind below needs that and resolving it twice would
+// mean two more DB reads per derivation.
+func (d *fsDeps) writeTarget(ctx context.Context, path string) (string, effect.Scope, string, string) {
 	ws, _ := d.resolveWorkspace(ctx)
 	abs, err := scope.Resolve(ws, path)
 	if err != nil {
-		return path, effect.ScopeExternal, "outside the workspace: " + err.Error()
+		return path, effect.ScopeExternal, "outside the workspace: " + err.Error(), ws
 	}
-	return abs, effect.ScopeWorkspace, ""
+	return abs, effect.ScopeWorkspace, "", ws
+}
+
+// writeKind reports which consequence a write to abs represents: ordinary file
+// write, or an edit to the workspace's long-term memory.
+//
+// Recognising this by path is what keeps the memory gate honest. The model
+// reaches project-level memory through write_file / edit_file like any other
+// file, so a rule keyed on tool NAME would never see it — and IsSafeAuto waves
+// through any non-sensitive workspace write, which means auto mode would let
+// the agent rewrite the user's standing project conventions with no card shown
+// and no record that memory was what changed.
+func writeKind(workspaceRoot, abs string) effect.Kind {
+	if p := memory.ProjectPath(workspaceRoot); p != "" && abs == filepath.Clean(p) {
+		return effect.KindMemoryWrite
+	}
+	return effect.KindFileWrite
 }
 
 // --- derivers ---
@@ -156,7 +205,7 @@ func (d *fsDeps) readEffect(field string) effect.Deriver {
 		if err != nil {
 			return effect.Effect{}, err
 		}
-		abs, sc, note := d.readTarget(ctx, stringField(args, field))
+		abs, sc, note, _ := d.readTarget(ctx, stringField(args, field))
 		return effect.Effect{
 			Kind:  effect.KindFileRead,
 			Scope: sc,
@@ -172,9 +221,9 @@ func (d *fsDeps) writeEffect(field string) effect.Deriver {
 		if err != nil {
 			return effect.Effect{}, err
 		}
-		abs, sc, note := d.writeTarget(ctx, stringField(args, field))
+		abs, sc, note, ws := d.writeTarget(ctx, stringField(args, field))
 		return effect.Effect{
-			Kind:  effect.KindFileWrite,
+			Kind:  writeKind(ws, abs),
 			Scope: sc,
 			Path:  abs,
 			Note:  note,
@@ -188,7 +237,7 @@ func (d *fsDeps) structureEffect(field string) effect.Deriver {
 		if err != nil {
 			return effect.Effect{}, err
 		}
-		abs, sc, note := d.writeTarget(ctx, stringField(args, field))
+		abs, sc, note, _ := d.writeTarget(ctx, stringField(args, field))
 		return effect.Effect{
 			Kind:  effect.KindFileStructure,
 			Scope: sc,
@@ -224,9 +273,9 @@ func (d *fsDeps) chunkedWriteEffect() effect.Deriver {
 				Note: "continues a write session already approved at mode=start",
 			}, nil
 		}
-		abs, sc, note := d.writeTarget(ctx, in.Path)
+		abs, sc, note, ws := d.writeTarget(ctx, in.Path)
 		return effect.Effect{
-			Kind:  effect.KindFileWrite,
+			Kind:  writeKind(ws, abs),
 			Scope: sc,
 			Path:  abs,
 			Note:  note,
@@ -262,13 +311,16 @@ func (d *fsDeps) rmEffect() effect.Deriver {
 		}
 		// rm resolves through ResolveRead, so an absolute path reaches
 		// anywhere on the machine.
-		abs, sc, note := d.readTarget(ctx, in.Path)
+		abs, sc, note, ws := d.readTarget(ctx, in.Path)
 		// Check the raw argument as well as the resolved path: `~/x` and
 		// `$HOME/x` are dangerous in the form the agent wrote them, and
 		// resolution erases that.
 		dangerous := approval.IsDangerousPath(in.Path) || approval.IsDangerousPath(abs)
 		return effect.Effect{
-			Kind:        effect.KindFileWrite,
+			// Deleting memory is editing it down to nothing, so it answers to
+			// the same gate rather than to the ordinary single-file delete
+			// path that auto mode waves through.
+			Kind:        writeKind(ws, abs),
 			Scope:       sc,
 			Path:        abs,
 			Destructive: in.Recursive || dangerous,
@@ -291,10 +343,16 @@ func (d *fsDeps) transferEffect(deletesSource bool) effect.Deriver {
 		if err := unmarshalArgs(argsJSON, &in); err != nil {
 			return effect.Effect{}, err
 		}
-		srcAbs, srcScope, srcNote := d.readTarget(ctx, in.Src)
-		dstAbs, dstScope, dstNote := d.readTarget(ctx, in.Dst)
+		srcAbs, srcScope, srcNote, ws := d.readTarget(ctx, in.Src)
+		dstAbs, dstScope, dstNote, _ := d.readTarget(ctx, in.Dst)
+		kind := effect.KindFileTransfer
+		// Overwriting memory.md by moving something onto it is a memory edit
+		// however it is spelled, so the destination decides the kind.
+		if writeKind(ws, dstAbs) == effect.KindMemoryWrite {
+			kind = effect.KindMemoryWrite
+		}
 		return effect.Effect{
-			Kind:      effect.KindFileTransfer,
+			Kind:      kind,
 			Scope:     effect.WorstScope(srcScope, dstScope),
 			Path:      srcAbs,
 			PathScope: srcScope,
@@ -318,7 +376,7 @@ func (d *fsDeps) runCommandEffect() effect.Deriver {
 		// run_command confines its cwd to the workspace, so the command runs
 		// inside it by construction. The command body can still reach out
 		// with an absolute path, which is what Classification is for.
-		cwd, cwdScope, note := d.writeTarget(ctx, in.Cwd)
+		cwd, cwdScope, note, _ := d.writeTarget(ctx, in.Cwd)
 		if in.Cwd == "" {
 			cwd, cwdScope, note = "", effect.ScopeWorkspace, ""
 		}

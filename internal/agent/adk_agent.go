@@ -17,6 +17,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/toolerr"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
+	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 )
 
@@ -75,6 +76,8 @@ func NewInterviewADKAgent(
 	approvalModes *approval.ModeStore,
 	classifier *approval.Classifier,
 	effects *effect.Registry,
+	memoryRegistry *memory.Registry,
+	userMemoryPath string,
 ) (*ADKBundle, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("ToolCallingChatModel is nil")
@@ -114,6 +117,10 @@ func NewInterviewADKAgent(
 	// 的技能下一轮就能出现在索引里。所有 agent 共用一个实例。
 	skillsMW := runtimectx.NewSkillsIndexMiddleware(skillLoader)
 
+	// 两级长期记忆同样每轮注入。挂在 skills 之后、workspace 之前：提示词缓存
+	// 按前缀匹配，把变动频率低的排在前面，改动时被作废的前缀就更短。
+	memoryMW := runtimectx.NewMemoryMiddleware(memoryRegistry, userMemoryPath, convRepo, projectRepo)
+
 	// Only the supervisor gets this one — see the dynamicTools doc above.
 	dynamicToolsMW := runtimectx.NewDynamicToolsMiddleware(dynamicTools)
 
@@ -141,7 +148,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers: []adk.ChatModelAgentMiddleware{skillsMW},
+		Handlers: []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deep.New: %w", err)
@@ -166,7 +173,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -190,7 +197,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
 		MaxIterations: 30,
 	})
 	if err != nil {
@@ -215,7 +222,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -246,7 +253,7 @@ func NewInterviewADKAgent(
 			// Runner's iter so the UI can show real-time progress.
 			EmitInternalEvents: true,
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, workspaceMW, dynamicToolsMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, dynamicToolsMW},
 		MaxIterations: 50,
 	})
 	if err != nil {

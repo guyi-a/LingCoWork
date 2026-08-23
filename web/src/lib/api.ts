@@ -199,6 +199,78 @@ export async function deleteInstruction(name: string): Promise<void> {
   );
 }
 
+export type MemoryScope = "user" | "project";
+
+export type MemoryDoc = {
+  scope: MemoryScope;
+  path: string;
+  content: string;
+  /** 读取时那一刻的版本。保存时带回去，服务端用它判断这期间有没有被 agent 改过。 */
+  hash: string;
+  bytes: number;
+  limit: number;
+};
+
+/** 保存冲突：读取之后 agent 也写过一次。调用方该重新加载再让用户决定。 */
+export class MemoryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MemoryConflictError";
+  }
+}
+
+/** 该会话还没绑定工作区，所以没有项目级记忆可读。 */
+export class NoWorkspaceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoWorkspaceError";
+  }
+}
+
+async function memoryJSON(res: Response, what: string): Promise<MemoryDoc> {
+  const data = (await res.json().catch(() => null)) as
+    | (MemoryDoc & { error?: string; code?: string })
+    | null;
+  if (!res.ok) {
+    const detail = data?.error ?? `${what}: ${res.status}`;
+    if (data?.code === "conflict") throw new MemoryConflictError(detail);
+    if (data?.code === "no_workspace") throw new NoWorkspaceError(detail);
+    throw new Error(detail);
+  }
+  if (!data) throw new Error(`${what}: empty response`);
+  return data;
+}
+
+function memoryURL(conversationId?: string, projectId?: string): string {
+  if (!conversationId) return `${API_BASE}/memory/user`;
+  const base = `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/memory`;
+  return projectId
+    ? `${base}?project_id=${encodeURIComponent(projectId)}`
+    : base;
+}
+
+/** conversationId 省略时读用户级；传了就读那个会话所属工作区的项目级。 */
+export async function getMemory(
+  conversationId?: string,
+  projectId?: string,
+): Promise<MemoryDoc> {
+  return memoryJSON(await fetch(memoryURL(conversationId, projectId)), "getMemory");
+}
+
+export async function saveMemory(
+  content: string,
+  hash: string,
+  conversationId?: string,
+  projectId?: string,
+): Promise<MemoryDoc> {
+  const res = await fetch(memoryURL(conversationId, projectId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, hash }),
+  });
+  return memoryJSON(res, "saveMemory");
+}
+
 export async function listConversations(): Promise<ConversationItem[]> {
   const res = await fetch(`${API_BASE}/conversations`);
   if (!res.ok) throw new Error(`listConversations: ${res.status}`);

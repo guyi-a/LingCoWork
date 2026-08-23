@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { MemoryEditor, MemoryIcon } from "@/features/memory/MemoryEditor";
 import { cn } from "@/lib/utils";
 
 export function ConversationHeader({
@@ -13,16 +14,18 @@ export function ConversationHeader({
   const projects = useProjectStore((s) => s.items);
   const panelOpen = useWorkspaceStore((s) => s.panelOpen);
   const togglePanel = useWorkspaceStore((s) => s.togglePanel);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
-  const { title, projectName } = useMemo(() => {
+  const { title, projectName, hasProject } = useMemo(() => {
     const conv = conversations.find((c) => c.id === conversationId);
-    if (!conv) return { title: "", projectName: "" };
+    if (!conv) return { title: "", projectName: "", hasProject: false };
     const project = conv.project_id
       ? projects.find((p) => p.id === conv.project_id)
       : null;
     return {
       title: conv.title || "新建会话",
       projectName: project?.name ?? "",
+      hasProject: !!conv.project_id,
     };
   }, [conversations, projects, conversationId]);
 
@@ -42,6 +45,25 @@ export function ConversationHeader({
         </h2>
       </div>
 
+      {/* 只有绑了工作区才有项目记忆可编辑。临时对话下这个按钮不出现 ——
+          让它出现再报"没有工作区"是把一个已知答案做成一次点击。 */}
+      {hasProject && (
+        <button
+          type="button"
+          onClick={() => setMemoryOpen(true)}
+          title="编辑项目记忆"
+          className={cn(
+            "no-drag shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded",
+            "text-[11px] font-mono uppercase tracking-[0.14em]",
+            "cursor-pointer transition-colors",
+            "text-muted hover:text-ink hover:bg-subtle",
+          )}
+        >
+          <MemoryIcon />
+          <span>Memory</span>
+        </button>
+      )}
+
       <button
         type="button"
         onClick={togglePanel}
@@ -59,6 +81,12 @@ export function ConversationHeader({
         <PanelIcon open={panelOpen} />
         <span>Files</span>
       </button>
+
+      <MemoryEditor
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        conversationId={conversationId}
+      />
     </header>
   );
 }

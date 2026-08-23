@@ -33,9 +33,17 @@ const (
 	// stall the bootstrap of every new conversation.
 	KindFileStructure Kind = "filesystem-structure"
 	KindFileTransfer  Kind = "filesystem-transfer"
-	KindProcessExec   Kind = "process-exec"
-	KindNetwork       Kind = "network-request"
-	KindSkillLoad     Kind = "skill-load"
+	// KindMemoryWrite modifies long-term memory. Split out from KindFileWrite
+	// because the blast radius is different in kind, not degree: an ordinary
+	// workspace write affects the files of one task, while a memory write
+	// silently shapes every future conversation. It is deliberately NOT in
+	// IsSafeAuto's fast path — a workspace write there is waved through, and
+	// waving this through would let the agent rewrite the user's standing
+	// preferences with nobody looking.
+	KindMemoryWrite Kind = "memory-write"
+	KindProcessExec Kind = "process-exec"
+	KindNetwork     Kind = "network-request"
+	KindSkillLoad   Kind = "skill-load"
 	// KindMCPCall is a tool provided by an MCP server. What it actually does
 	// is only as knowable as the server chooses to declare, so the effect
 	// records the declaration and who made it rather than pretending to know

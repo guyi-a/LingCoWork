@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
+import { MemoryEditor, MemoryIcon } from "@/features/memory/MemoryEditor";
 import { ConversationItem } from "./ConversationItem";
 import { ProjectGroup } from "./ProjectGroup";
 
 export function Sidebar() {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const conversations = useConversationStore((s) => s.items);
   const convLoading = useConversationStore((s) => s.loading);
   const refreshConv = useConversationStore((s) => s.refresh);
@@ -121,6 +123,22 @@ export function Sidebar() {
       )}
 
       <footer className="shrink-0 border-t border-rule/60 p-2">
+        {/* 记忆是个弹窗而不是路由：它只有一个文件，开一个设置页给一块 textarea
+            不划算，而且从对话里打开项目记忆走的也是同一个弹窗。 */}
+        <button
+          type="button"
+          onClick={() => setMemoryOpen(true)}
+          title="记忆管理"
+          className={[
+            "flex h-10 w-full items-center rounded-xl text-[14px] text-muted transition-colors hover:bg-rule/70 hover:text-ink",
+            collapsed ? "justify-center" : "gap-3 px-3",
+          ].join(" ")}
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <MemoryIcon />
+          </span>
+          {!collapsed && <span className="truncate">记忆管理</span>}
+        </button>
         <NavLink
           to="/settings/instructions"
           title="快捷指令"
@@ -170,6 +188,8 @@ export function Sidebar() {
           {!collapsed && <span className="truncate">连接器</span>}
         </NavLink>
       </footer>
+
+      <MemoryEditor open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </aside>
   );
 }

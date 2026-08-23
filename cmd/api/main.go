@@ -25,6 +25,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/handler"
 	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/mcp"
+	"github.com/guyi-a/Interview-Agent/internal/memory"
 	ragembedding "github.com/guyi-a/Interview-Agent/internal/rag/embedding"
 	ragretriever "github.com/guyi-a/Interview-Agent/internal/rag/retriever"
 	ragstore "github.com/guyi-a/Interview-Agent/internal/rag/store"
@@ -39,6 +40,8 @@ const (
 	dbPath          = "data/interview.db"
 	workspaceRoot   = ".workspace"
 	instructionRoot = ".lingcowork/instructions"
+	// 用户级长期记忆。项目级的那份在工作区根下，路径由 memory.ProjectPath 算。
+	userMemoryPath  = ".lingcowork/memory.md"
 	addr            = ":9001"
 	shutdownTimeout = 5 * time.Second
 )
@@ -150,6 +153,12 @@ func main() {
 	)
 	log.Printf("skillhub: registry=%s install_dir=%s", skillHubRegistry.Base(), skillLoader.UserDir())
 
+	// One registry for both memory levels: the user-level path is known here,
+	// the project-level ones only at request time, and routing both through it
+	// keeps a single lock per file. The tool and the HTTP handler take stores
+	// from the same registry as the injection middleware.
+	memoryRegistry := memory.NewRegistry()
+
 	ts, effects, err := tools.Builtin(ctx, tools.Deps{
 		WorkspaceRoot:    absWorkspaceRoot,
 		ProjectRepo:      projectRepo,
@@ -157,6 +166,7 @@ func main() {
 		BrowserUseMgr:    browserMgr,
 		BridgeService:    bridgeSvc,
 		SkillLoader:      skillLoader,
+		UserMemory:       memoryRegistry.For(userMemoryPath),
 		RAGRetriever:     buildRAGRetriever(cfg),
 		SearchService:    buildSearchService(cfg),
 	})
@@ -183,7 +193,7 @@ func main() {
 	mcpMgr.Connect(ctx)
 	defer mcpMgr.Close()
 
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -201,6 +211,7 @@ func main() {
 	convService := service.NewConversationService(convRepo, msgRepo, compactionRepo, manager, browserMgr)
 	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr, absWorkspaceRoot)
 	workspaceService := service.NewWorkspaceService(convRepo, projectRepo)
+	memoryService := service.NewMemoryService(memoryRegistry, userMemoryPath, workspaceService)
 
 	chatHandler := handler.NewChatHandler(chatService)
 	approvalHandler := handler.NewApprovalHandler(chatService)
@@ -210,6 +221,7 @@ func main() {
 	mcpHandler := handler.NewMCPHandler(mcpMgr)
 	skillHubHandler := handler.NewSkillHubHandler(skillHubSvc, skillHubCats)
 	instructionHandler := handler.NewInstructionHandler(instructionStore)
+	memoryHandler := handler.NewMemoryHandler(memoryService)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
@@ -221,6 +233,7 @@ func main() {
 	mcpHandler.Register(r)
 	skillHubHandler.Register(r)
 	instructionHandler.Register(r)
+	memoryHandler.Register(r)
 	browserbridge.Register(r, bridgeSvc)
 
 	srv := &http.Server{Addr: addr, Handler: r}
