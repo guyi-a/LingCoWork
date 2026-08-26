@@ -5,8 +5,10 @@ Thumbs.db
 # Editor directories and files
 .vscode/
 .idea/
+.cursor/
 .codeflicker/
 .claude/
+.myflicker/
 *.swp
 *.swo
 *~
@@ -67,9 +69,9 @@ docs/
 # TypeScript incremental build info
 *.tsbuildinfo
 
-# Electron dev shell (electron/ is a sibling pnpm package; artifacts and its
-# lockfile stay out of the root repo to avoid clashing with the frontend's
-# pnpm workspace).
+# Electron package artifacts (electron/ is a sibling pnpm package with its
+# own lockfile).
 electron/node_modules/
 electron/out/
-electron/pnpm-lock.yaml
+electron/package-resources/
+release/

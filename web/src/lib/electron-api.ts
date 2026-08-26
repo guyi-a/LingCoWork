@@ -18,6 +18,9 @@ export interface SavedPastedImage {
 }
 
 export interface ElectronAPI {
+  readonly runtimeConfig: {
+    readonly apiBase: string;
+  };
   pickFiles: () => Promise<PickedLocalFile[]>;
   savePastedImage: (
     bytes: Uint8Array,

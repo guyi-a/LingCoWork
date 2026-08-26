@@ -1,0 +1,49 @@
+appId: com.guyi.lingcowork
+productName: LingCoWork
+copyright: Copyright © 2026
+
+directories:
+  output: ../release
+  buildResources: assets
+
+files:
+  - out/**/*
+  - package.json
+
+asar: true
+npmRebuild: false
+
+extraResources:
+  - from: package-resources/backend
+    to: backend
+    filter:
+      - lingcowork-api
+  - from: package-resources/web
+    to: web
+    filter:
+      - "**/*"
+  - from: ../.env.example
+    to: config/.env.example
+  - from: assets/icon-source.png
+    to: icon.png
+
+mac:
+  category: public.app-category.productivity
+  icon: assets/icon.icns
+  target:
+    - target: dir
+      arch:
+        - arm64
+    - target: dmg
+      arch:
+        - arm64
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+dmg:
+  title: "${productName} ${version}"
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  sign: false
+
+publish: null

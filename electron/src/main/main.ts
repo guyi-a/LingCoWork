@@ -1,8 +1,8 @@
 /**
- * Interview-Agent Electron main process (dev-only shell).
+ * LingCoWork Electron main process.
  *
- * Chromium window pointed at the Vite dev server on :5173. Frontend still
- * hits the Go backend directly on :9001 — no proxy, no API-base injection.
+ * Development loads Vite on :5173. Packaged builds serve web assets from
+ * Resources/web through the restricted lingcowork://app protocol.
  *
  * IPC surface (kept intentionally tiny — see preload):
  *   'pick-files'         → PickedLocalFile[]  (native file/folder picker)
@@ -16,20 +16,28 @@
  *                                              image files by absolute path
  *                                              — chip thumbnails, etc.)
  *
- * Explicitly NOT doing: spawning the Go backend, port probing, packaging,
- * auto-update, generic IPC bridge.
+ * The renderer talks directly to the local Go backend on 127.0.0.1:9001.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
 import { existsSync } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-const DEV_RENDERER_URL = 'http://localhost:5173';
+import { BackendSidecar } from './backend.js';
 
-app.setName('Interview Agent');
+const DEV_RENDERER_URL = 'http://localhost:5173';
+const PROD_RENDERER_URL = 'lingcowork://app/';
+let backendSidecar: BackendSidecar | null = null;
+let quitAfterBackendStops = false;
+
+app.setName('LingCoWork');
+const userDataOverride = process.env.LINGCOWORK_USER_DATA_DIR?.trim();
+if (userDataOverride) {
+  app.setPath('userData', path.resolve(userDataOverride));
+}
 
 // local-file must be registered as privileged BEFORE app.whenReady per the
 // Electron contract; the handler is installed inside whenReady. Purpose:
@@ -38,6 +46,10 @@ app.setName('Interview Agent');
 // renderer, so no path allowlist — the renderer already knows the absolute
 // paths it received via pick-files / save-pasted-image.
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'lingcowork',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
   {
     scheme: 'local-file',
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
@@ -71,6 +83,10 @@ interface SavedPastedImage {
 // the repo layout), fall back to Electron's per-app userData dir so
 // paste still works — just in a less-discoverable spot, with a warning.
 function attachmentsDir(): string {
+  if (app.isPackaged) {
+    return path.join(app.getPath('userData'), 'attachments');
+  }
+
   const repoRoot = path.resolve(__dirname, '..', '..', '..');
   const preferred = path.join(repoRoot, '.workspace', '_attachments');
   const workspaceRoot = path.join(repoRoot, '.workspace');
@@ -170,8 +186,42 @@ function registerLocalFileProtocol(): void {
   });
 }
 
+function registerAppProtocol(): void {
+  if (!app.isPackaged) return;
+
+  const webRoot = path.join(process.resourcesPath, 'web');
+  const indexPath = path.join(webRoot, 'index.html');
+
+  protocol.handle('lingcowork', async (req) => {
+    const url = new URL(req.url);
+    if (url.host !== 'app') {
+      return new Response('Not found', { status: 404 });
+    }
+
+    const relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    const candidate = path.resolve(webRoot, relativePath || 'index.html');
+    const insideWebRoot =
+      candidate === webRoot || candidate.startsWith(`${webRoot}${path.sep}`);
+
+    if (insideWebRoot) {
+      try {
+        if ((await stat(candidate)).isFile()) {
+          return net.fetch(pathToFileURL(candidate).toString());
+        }
+      } catch {
+        // BrowserRouter deep links intentionally fall through to index.html.
+      }
+    }
+
+    return net.fetch(pathToFileURL(indexPath).toString());
+  });
+}
+
 function createWindow(): void {
   const preloadPath = path.join(__dirname, '../preload/preload.js');
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(__dirname, '..', '..', 'assets', 'icon-source.png');
 
   const win = new BrowserWindow({
     width: 1440,
@@ -179,15 +229,20 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 640,
     frame: false,
+    show: false,
+    icon: iconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: preloadPath,
-      devTools: true,
+      devTools: !app.isPackaged || shouldOpenDevTools(),
     },
   });
 
-  win.loadURL(DEV_RENDERER_URL);
+  win.once('ready-to-show', () => win.show());
+  void win.loadURL(app.isPackaged ? PROD_RENDERER_URL : DEV_RENDERER_URL).catch((error) => {
+    dialog.showErrorBox('LingCoWork failed to load', String(error));
+  });
 
   if (shouldOpenDevTools()) {
     win.webContents.openDevTools();
@@ -198,19 +253,117 @@ function createWindow(): void {
 // (webPreferences.devTools is on); this just controls whether the panel is
 // already open when the window appears.
 function shouldOpenDevTools(): boolean {
-  const raw = (process.env.INTERVIEW_ELECTRON_DEVTOOLS ?? '').trim().toLowerCase();
+  const raw = (
+    process.env.LINGCOWORK_ELECTRON_DEVTOOLS ??
+    process.env.INTERVIEW_ELECTRON_DEVTOOLS ??
+    ''
+  ).trim().toLowerCase();
   return ['1', 'true', 'on', 'yes'].includes(raw);
 }
 
-app.whenReady().then(() => {
+async function ensureRuntimeConfig(): Promise<boolean> {
+  const runtimeHome = app.getPath('userData');
+  const configPath = path.join(runtimeHome, '.env');
+  if (existsSync(configPath)) return true;
+
+  await mkdir(runtimeHome, { recursive: true });
+  const choice = await dialog.showMessageBox({
+    type: 'info',
+    title: 'Set up LingCoWork',
+    message: 'LingCoWork needs an environment file before its first launch.',
+    detail:
+      'Import an existing .env file, or create a template in Application Support and fill in DEEPSEEK_API_KEY.',
+    buttons: ['Import .env', 'Create template and exit'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+
+  if (choice.response === 0) {
+    const selected = await dialog.showOpenDialog({
+      title: 'Import LingCoWork environment file',
+      message: 'Choose the .env file that contains your API configuration.',
+      buttonLabel: 'Import',
+      properties: ['openFile', 'showHiddenFiles'],
+    });
+    if (!selected.canceled && selected.filePaths[0]) {
+      await copyFile(selected.filePaths[0], configPath);
+      await chmod(configPath, 0o600);
+      return true;
+    }
+  }
+
+  const templatePath = path.join(process.resourcesPath, 'config', '.env.example');
+  await copyFile(templatePath, configPath);
+  await chmod(configPath, 0o600);
+  shell.showItemInFolder(configPath);
+  await dialog.showMessageBox({
+    type: 'info',
+    title: 'Configuration template created',
+    message: 'Fill in the environment file, then reopen LingCoWork.',
+    detail: configPath,
+    buttons: ['OK'],
+  });
+  return false;
+}
+
+async function startPackagedBackend(): Promise<void> {
+  const runtimeHome = app.getPath('userData');
+  const executablePath = path.join(process.resourcesPath, 'backend', 'lingcowork-api');
+
+  backendSidecar = new BackendSidecar({
+    executablePath,
+    runtimeHome,
+    onUnexpectedExit: (message) => {
+      dialog.showErrorBox(
+        'LingCoWork backend stopped',
+        `${message}\n\nSee ${path.join(runtimeHome, 'logs', 'backend.log')} for details.`,
+      );
+      app.quit();
+    },
+  });
+  await backendSidecar.start();
+}
+
+app.whenReady().then(async () => {
   registerIpc();
   registerLocalFileProtocol();
+  registerAppProtocol();
+
+  if (app.isPackaged) {
+    try {
+      if (!(await ensureRuntimeConfig())) {
+        app.quit();
+        return;
+      }
+      await startPackagedBackend();
+    } catch (error) {
+      const runtimeHome = app.getPath('userData');
+      dialog.showErrorBox(
+        'LingCoWork could not start',
+        `${error instanceof Error ? error.message : String(error)}\n\nSee ${path.join(runtimeHome, 'logs', 'backend.log')} for details.`,
+      );
+      app.quit();
+      return;
+    }
+  }
+
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
+  });
+});
+
+app.on('before-quit', (event) => {
+  if (quitAfterBackendStops || !backendSidecar) return;
+
+  event.preventDefault();
+  void backendSidecar.stop().finally(() => {
+    backendSidecar = null;
+    quitAfterBackendStops = true;
+    app.quit();
   });
 });
 

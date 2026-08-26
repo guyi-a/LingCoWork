@@ -1,34 +1,69 @@
 # LingCoWork
 
-**跟 AI 一起开工。** 一个本地跑的 Agent 工作站：Go 后端 + React 前端 + Electron 桌面壳，内置对话、工具调用、技能加载、RAG 检索、联网搜索、人工审批与浏览器桥。
+**跟 AI 一起开工。** LingCoWork 是一个本地 Agent 工作站：以求职准备作为真实场景，用
+Go + eino ADK 验证多 Agent 架构，并围绕模型补齐工具执行、审批恢复、上下文管理和桌面运行等
+Agent Harness 能力。
 
 > 仓库里 Go module 名仍是 `Interview-Agent`（历史遗留），产品在演进过程中扩展成了通用的 Co-work Agent，UI 侧统一叫 **LingCoWork**。
 
 ---
 
-## 功能一览
+## 核心架构
 
-- **Agent 对话** — 基于 [cloudwego/eino](https://github.com/cloudwego/eino) 编排，支持流式输出、多轮 thinking、工具调用。默认走 DeepSeek（OpenAI 兼容协议）。
-- **工具集**（`internal/agent/tools`）
-  - 文件系统：`fs`、`fs_ops`、`fs_chunked_write`
-  - Shell 执行：`shell`（带破坏性命令审批门槛）
-  - 联网：`web_search`（Tavily / Bocha 双源合并去重）、`web_fetch`
-  - RAG：`rag_search`
-  - 文档解析：`extract_document`、`docx`、`pptx`
-  - 浏览器：`browser_bridge`、`browser_use`
-  - HITL：`ask_user`（人工介入）
-  - Skill 动态加载：`load_skill`
-  - Workspace：`workspace`、`workspace_resolve`
-  - OCR：`ocr_collector`
-- **Skills**（`internal/agent/skills`）— docx / pdf / pptx / bosszp / browser-bridge / browser-use，按需加载，避免主 prompt 膨胀。
-- **RAG 层** — chunker → embedding → indexer → retriever → sqlite 向量存储；离线索引用 `cmd/rag-index`，命令行检索用 `cmd/rag-search`。默认嵌入模型走阿里云 DashScope OpenAI-兼容接口，可替换为任意 `/embeddings` 端点。
-- **MCP 客户端**（`internal/mcp`）— 接入第三方 MCP 服务器（stdio 与 streamable HTTP / SSE），远端工具改名后加进 supervisor 的工具表，走同一套 effect + 审批。配置在 `.lingcowork/mcp.json`（Claude Desktop 同构 schema，见 [`mcp.example.json`](mcp.example.json)），前端 `/settings/connectors` 可查看状态、测连接、改配置、跑 OAuth 授权。
-  - **连接是活的**：服务器随时增删改，改完立即生效，不需要重启。这不是锦上添花——OAuth 授权本身就是交互式的，用户点「授权」的那一刻应用早就在跑了，重启不可能是答案。supervisor 通过 `DynamicToolsMiddleware` 每轮重读工具表（eino 每次 run 会从冻结的基准表复制一份交给 `BeforeAgent` 改），所以中途上线的服务器下一轮就能被模型调用。
-  - **OAuth**：授权码 + PKCE + 动态客户端注册。token 和注册下来的 client id 存在 `data/interview.db`（0600），不在配置文件里；回调走 `http://localhost:9001/mcp/oauth/callback`。调用中途 token 被服务端吊销会自动刷新重试一次，仍失败才把服务器标成待授权。
-- **审批 / HITL** — `internal/effect` + `internal/approval` + `internal/hitl`：每个工具声明自己的调用后果（effect），审批策略是这份后果的纯函数，未知 effect 一律问人——所以 MCP 第三方工具不会因为"没见过这个名字"而被静默放行。对 MCP 的信任是非对称的：服务器自称破坏性立刻采信，自称只读要用户先在配置里 `trustAnnotations` 背书才算数。`APPROVAL_FAST_MODEL`（默认 DeepSeek Chat）作为快速分类器决定是否走 auto 模式。
-- **工作区隔离** — 每个会话都有独立的 `.workspace/<id>/`，工具的路径都在里面 resolve，防止越界。
-- **前端**（`web/`）— React 19 + Vite + Tailwind + Zustand + Streamdown（Markdown 流式渲染）+ Shiki + KaTeX，附带 docx / pptx 预览器。
-- **桌面壳**（`electron/`）— 只在 dev 期加载 Vite `:5173`，不负责起后端；纯壳。
+### 五 Agent 拓扑
+
+`supervisor` 负责理解、派发和汇总，四个领域 Agent 通过 AgentAsTool 挂载，各自使用独立上下文：
+
+```text
+supervisor
+├── deep_research       多步研究与结构化报告
+├── job_search          招聘网站搜索与岗位整理
+├── resume_analyzer     简历与 JD 匹配分析
+└── question_planner    模拟面试题生成
+```
+
+eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 interrupt 协议；本项目负责
+拓扑设计、SQLite checkpoint、事件持久化、审批恢复和产品层展示。
+
+### Agent Harness
+
+- **24 个内置工具**：时间、RAG、人工提问、文件读写、目录操作、命令执行、文档解析、
+  Workspace、浏览器、联网、Skill 加载和长期记忆。准确名称以
+  `tools.BuiltinToolNames()` 为准。
+- **四个运行时中间件**：Skills 索引、两级 Memory、Workspace 状态和 MCP 动态工具表均在
+  每轮运行前刷新；安装 Skill 或完成 OAuth 后无需重启 Agent。
+- **Effect 审批**：策略判断的是调用后果，而不是工具名。未知 effect 默认询问用户；
+  pending approval 和 checkpoint 会落库，页面刷新或进程重启后仍可恢复。
+- **流式与子 Agent 可观测性**：Runner 事件编码为 SSE，主回复、thinking、工具调用和
+  sub-agent 内部事件按层级展示并持久化。
+- **上下文压缩**：在轮次之间把旧历史折叠成摘要；原消息不删除，UI 仍展示完整记录。
+
+```text
+get_current_time  rag_search          ask_user             read_file
+list_files        file_info           extract_document_text write_file
+edit_file         edit_file_lines     mkdir                write_file_chunked
+create_workspace  rm                  mv                   cp
+run_command       browser_use         browser_bridge       browser_use_install
+web_search        web_fetch           load_skill           remember
+```
+
+### 动态能力
+
+- **Skills / SkillHub**：内置 `docx`、`pdf`、`pptx`、`bosszp`、`browser-bridge`、
+  `browser-use`，也支持从 SkillHub 安装用户 Skill。
+- **MCP**：支持 stdio、Streamable HTTP / SSE、动态增删、连接测试以及授权码 + PKCE +
+  动态客户端注册。远端工具只注入 supervisor，并沿用同一套 effect 审批。
+- **Memory**：用户级与项目级 Markdown 记忆，每轮注入；模型通过 `remember` 写入，
+  覆盖式修改需要审批。
+- **RAG 与联网搜索**：Hybrid Vector + BM25 检索；联网搜索支持 Tavily / Bocha 双源。
+
+### Workspace 与桌面应用
+
+- 项目或会话可以挂载独立 Workspace；所有文件工具都会做边界解析，越界读写进入审批或被拒绝。
+- 右侧面板支持文件树以及 Markdown、代码、CSV、PDF、docx、pptx、图片和音视频只读预览。
+  HTML 默认按源码展示，不在应用本源中执行。
+- Electron 开发态加载 Vite；打包态通过 `lingcowork://app` 加载包内前端，并托管
+  `darwin/arm64` Go sidecar。后端就绪后才显示窗口，退出时按进程组清理子进程。
 
 ## 技术栈
 
@@ -37,41 +72,39 @@
 | Backend | Go 1.26 · Gin · GORM · SQLite (glebarez/sqlite) · Eino |
 | LLM | DeepSeek（eino-ext OpenAI adapter） |
 | Frontend | React 19 · Vite 7 · TypeScript 5.9 · TailwindCSS 4 · Zustand |
-| Desktop | Electron 40 |
-| Storage | SQLite（对话 + 向量都在里面） |
+| Desktop | Electron 40 · Electron Builder |
+| Storage | SQLite（对话、checkpoint、OAuth、向量）· Markdown（Memory） |
 
 ## 目录结构
 
-```
+```text
 .
 ├── cmd/
-│   ├── api/          # 主服务入口 (Gin, :9001)
-│   ├── rag-index/    # 离线索引 CLI
-│   └── rag-search/   # 命令行检索 CLI
+│   ├── api/            # Gin 主服务，127.0.0.1:9001
+│   ├── rag-index/      # RAG 离线索引
+│   └── rag-search/     # RAG 命令行检索
 ├── internal/
-│   ├── agent/        # Agent、LLM、tools、skills、prompts、runtimectx
-│   ├── approval/     # 审批策略 + 破坏性命令 shell AST 分析
-│   ├── effect/       # 工具调用后果描述（审批策略的输入，MCP 接入点）
-│   ├── compaction/   # 跨轮次上下文压缩
-│   ├── llmhttp/      # 极简 OpenAI 兼容客户端（分类器 / 摘要器共用）
-│   ├── hitl/         # 人工介入 (ask_user)
-│   ├── handler/      # HTTP handler (chat / conversation / project / workspace / approval / mcp)
-│   ├── mcp/          # MCP 客户端：连接生命周期、OAuth、工具改名、结果拍平、effect 派生
-│   ├── rag/          # chunker · embedding · indexer · retriever · store · vector
-│   ├── repository/   # GORM 仓库
-│   ├── service/      # 领域服务
-│   ├── stream/       # SSE 流式与阶段追踪
-│   ├── webfetch/     # 网页抓取
-│   └── websearch/    # Tavily / Bocha 双源
-├── web/              # React 前端
-├── electron/         # 桌面壳
-├── docs/
-│   ├── eino/         # eino 框架笔记
-│   ├── rag_docs/     # RAG 默认索引目录
-│   └── interview-notes/
-├── data/             # SQLite (interview.db / rag.db) - 首次运行自动创建
-├── logs/dev/         # dev.sh 三个进程的日志
-└── dev.sh            # 一键开发启动脚本
+│   ├── agent/          # 五 Agent、24 个工具、Skills、运行时中间件
+│   ├── approval/       # 审批模式、分类器、pending 状态
+│   ├── compaction/     # 跨轮上下文压缩
+│   ├── effect/         # 工具后果描述与推导
+│   ├── handler/        # HTTP / SSE / Workspace / MCP handlers
+│   ├── instructions/   # 快捷指令文件存储
+│   ├── mcp/            # MCP 生命周期、动态工具、OAuth PKCE
+│   ├── memory/         # 两级长期记忆
+│   ├── rag/            # chunker、embedding、indexer、retriever
+│   ├── repository/     # SQLite / GORM 仓库
+│   ├── service/        # 对话、项目、Workspace 领域服务
+│   ├── skillhub/       # Skill 市场与安装
+│   └── stream/         # SSE Buffer 与阶段追踪
+├── web/                # React 前端与 Workspace 预览
+├── electron/           # Electron Main / Preload / Builder
+├── scripts/            # macOS 打包脚本
+├── docs/               # 复习材料、算法、RAG 文档与简历
+├── data/               # 开发态 SQLite 与用户 Skills
+├── .workspace/         # 开发态项目 / 会话工作区
+├── PACKAGING.md        # macOS 构建与验证说明
+└── dev.sh              # 一键开发启动
 ```
 
 ## 快速开始
@@ -95,11 +128,13 @@ cp .env.example .env
 ```
 
 脚本会依次拉起：
-- **backend** — `go run ./cmd/api`，监听 `:9001`
+- **backend** — `go run ./cmd/api`，监听 `127.0.0.1:9001`
 - **frontend** — `pnpm dev` in `web/`，固定 `:5173`
 - **electron** — `pnpm start` in `electron/`，加载 `:5173`
 
-打开 [http://localhost:5173](http://localhost:5173) 或直接用弹出的 Electron 窗口。
+使用弹出的 Electron 窗口。`--no-electron` 时也可打开
+[http://localhost:5173](http://localhost:5173)，但原生文件选择和 `local-file://` 预览只在
+Electron 中可用。
 
 ### 常用参数
 
@@ -112,7 +147,7 @@ cp .env.example .env
 
 日志在 `logs/dev/{backend,frontend,electron}.log`。Ctrl-C 一次会清干净所有子进程。
 
-### 单独构建
+### 分层构建
 
 ```bash
 # backend
@@ -121,9 +156,36 @@ go build -o bin/api ./cmd/api
 # frontend
 cd web && pnpm build          # 产物在 web/dist/
 
-# electron (dev-only 壳)
-cd electron && pnpm start
+# electron TypeScript
+cd electron && pnpm build
 ```
+
+### macOS 打包
+
+首版只构建 Apple Silicon（arm64），输出未签名的 `.app` 和 `.dmg`：
+
+```bash
+./scripts/package-macos.sh
+```
+
+产物在 `release/`。首次启动会要求导入 `.env`；取消导入时，应用会在
+`~/Library/Application Support/LingCoWork/.env` 创建模板并退出，填写后重新打开即可。
+数据库、工作区、Skills、Memory、MCP 配置、附件和日志也都保存在同一个 Application
+Support 目录，不会写进 `.app`。
+
+未签名构建可能被 Gatekeeper 拦截。可在 Finder 中按住 Control 点击应用并选择“打开”；
+不要为了测试关闭整个系统的 Gatekeeper。构建结构、验证步骤和首版限制见
+[`PACKAGING.md`](PACKAGING.md)。
+
+### 运行数据
+
+- 开发态：仓库下的 `.env`、`data/`、`.workspace/` 和 `.lingcowork/`。
+- 打包态：`~/Library/Application Support/LingCoWork/`。Electron 通过
+  `LINGCOWORK_HOME` 把数据库、Workspace、Memory、Instructions、用户 Skills、MCP 配置、
+  附件和日志统一放到这里。
+
+`.lingcowork/mcp.json` 可能包含 API Key 或 Authorization Header，不应提交到 Git。
+OAuth token 和动态注册得到的 client id 存在 SQLite 中，不写回 JSON。
 
 ## 环境变量
 
@@ -167,10 +229,14 @@ go run ./cmd/rag-search "query keywords"      # 命令行验证检索
 
 ## 架构备注
 
-- **Workspace 隔离** — 每个 conversation 一个 `.workspace/<id>/`，所有工具的路径都先经 `workspace_resolve`，越界的路径会被拒。
+- **Workspace 隔离** — 会话可使用默认 Workspace，也可绑定项目 Workspace；相对路径统一在
+  当前根目录解析，越界路径会被拒绝或进入审批。
 - **流式与阶段追踪** — `internal/stream` 分阶段发 SSE，前端可以拿到 "thinking / tool_call / tool_result / text" 等阶段标签。
-- **审批门槛** — 策略按调用的 **effect**（`internal/effect`）决策而非工具名：写入、移动、执行命令、以及读取工作区外的文件会挂起等审批；破坏性操作和无法识别 effect 的调用即使 `full_access` 也拦。`APPROVAL_MODE=auto` 时快速分类器判断能不能自动放行；`ask_user` 工具走同一套人工介入通道。
-- **Skills 动态加载** — Skill 是一组 prompt + 允许的工具白名单，用 `load_skill` 工具按需拉进上下文，主 prompt 保持精简。
+- **审批门槛** — 策略按调用的 **effect**（`internal/effect`）决策而非工具名：写入、移动、执行命令、以及读取工作区外的文件会挂起等审批；破坏性操作和无法识别 effect 的调用即使 `full_access` 也拦。会话选择 `auto` 模式时由快速分类器判断能否自动放行；`ask_user` 工具走同一套人工介入通道。
+- **Skills 动态加载** — Skill 是方法论提示词和允许工具边界，通过 `load_skill` 按需进入
+  上下文；Skills 索引每轮刷新。
+- **Memory 分层** — 用户级记忆对所有项目生效，项目级记忆跟随 Workspace；两者均有大小限制
+  和乐观锁。
 
 ## License
 

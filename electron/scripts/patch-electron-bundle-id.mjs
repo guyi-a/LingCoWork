@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 
 if (process.platform !== 'darwin') process.exit(0);
 
-const NEW_ID = 'com.interview-agent.dev.electron';
+const NEW_ID = 'com.guyi.lingcowork.dev';
 const LSREGISTER =
   '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister';
 

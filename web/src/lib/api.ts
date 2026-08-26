@@ -1,4 +1,5 @@
-export const API_BASE = "http://localhost:9001";
+export const API_BASE =
+  window.electronAPI?.runtimeConfig.apiBase ?? "http://127.0.0.1:9001";
 
 export type ConversationItem = {
   id: string;

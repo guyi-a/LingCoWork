@@ -3,8 +3,13 @@ import { cn } from "@/lib/utils";
 import { useApprovalMode } from "@/features/chat/approval-mode-store";
 import type { ApprovalMode } from "@/lib/api";
 
-// The three modes exposed to the user. Order here is the order in the menu.
-// Keep in sync with backend approval.Mode.
+// The modes exposed to the user. Order here is the order in the menu.
+//
+// Deliberately a subset of backend approval.Mode: "auto" (rule fast path plus
+// an LLM classifier) still exists server-side but is not offered here. Letting
+// a model decide what needs a human is a bigger promise than this product is
+// ready to make, and every call that misses the fast path costs an extra LLM
+// round trip. The backend keeps it so the choice stays reversible.
 //
 // Colour discipline: we deliberately avoid tinting (blue/amber/etc.) so the
 // dropdown reads as a neutral setting, not a status indicator. Escalation to
@@ -21,12 +26,6 @@ const OPTIONS: {
     label: "默认权限",
     hint: "每次写/改文件都问",
     icon: (c) => <ShieldCheckIcon className={c} />,
-  },
-  {
-    value: "auto",
-    label: "自动权限",
-    hint: "AI 判定安全的自动通过",
-    icon: (c) => <ShieldAlertIcon className={c} />,
   },
   {
     value: "full_access",
@@ -145,17 +144,6 @@ function ShieldCheckIcon({ className }: { className?: string }) {
       strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
       <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
-
-function ShieldAlertIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-      <path d="M12 8v4" />
-      <path d="M12 16h.01" />
     </svg>
   );
 }

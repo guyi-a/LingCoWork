@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,15 +43,18 @@ const (
 	workspaceRoot   = ".workspace"
 	instructionRoot = ".lingcowork/instructions"
 	// 用户级长期记忆。项目级的那份在工作区根下，路径由 memory.ProjectPath 算。
-	userMemoryPath  = ".lingcowork/memory.md"
-	addr            = ":9001"
-	shutdownTimeout = 5 * time.Second
+	userMemoryPath   = ".lingcowork/memory.md"
+	addr             = "127.0.0.1:9001"
+	oauthRedirectURL = "http://localhost:9001/mcp/oauth/callback"
+	shutdownTimeout  = 5 * time.Second
 )
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173" {
+		if origin == "http://localhost:5173" ||
+			origin == "http://127.0.0.1:5173" ||
+			origin == "lingcowork://app" {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Content-Type")
@@ -63,7 +68,38 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func registerHealthz(r gin.IRoutes) {
+	r.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+}
+
+func configureRuntimeHome() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("LINGCOWORK_HOME"))
+	if raw == "" {
+		return os.Getwd()
+	}
+
+	home, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve LINGCOWORK_HOME: %w", err)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return "", fmt.Errorf("create LINGCOWORK_HOME: %w", err)
+	}
+	if err := os.Chdir(home); err != nil {
+		return "", fmt.Errorf("enter LINGCOWORK_HOME: %w", err)
+	}
+	return home, nil
+}
+
 func main() {
+	runtimeHome, err := configureRuntimeHome()
+	if err != nil {
+		log.Fatalf("runtime home: %v", err)
+	}
+	log.Printf("runtime home: %s", runtimeHome)
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config.Load: %v", err)
@@ -186,7 +222,7 @@ func main() {
 	// with an error pointing at the provider, not at us.
 	mcpAuth := mcp.NewAuthorizer(
 		mcp.NewDBCredentialStore(repository.NewMCPCredentialRepo(db)),
-		"http://localhost"+addr+"/mcp/oauth/callback",
+		oauthRedirectURL,
 	)
 	mcpMgr := mcp.New(loadMCPConfig(), tools.BuiltinToolNames(), mcpAuth)
 	mcpMgr.SetEffectRegistry(effects)
@@ -225,6 +261,7 @@ func main() {
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
+	registerHealthz(r)
 	chatHandler.Register(r)
 	approvalHandler.Register(r)
 	convHandler.Register(r)
