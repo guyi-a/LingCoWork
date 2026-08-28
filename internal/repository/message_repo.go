@@ -71,6 +71,16 @@ func (r *MessageRepo) AppendMany(ctx context.Context, msgs []*model.Message) err
 	})
 }
 
+func (r *MessageRepo) LatestUserSeq(ctx context.Context, conversationID string) (int, error) {
+	var seq int
+	err := r.db.WithContext(ctx).
+		Model(&model.Message{}).
+		Where("conversation_id = ? AND role = ?", conversationID, "user").
+		Select("COALESCE(MAX(seq), 0)").
+		Scan(&seq).Error
+	return seq, err
+}
+
 // List returns all messages of a conversation in seq order.
 func (r *MessageRepo) List(ctx context.Context, conversationID string) ([]model.Message, error) {
 	var out []model.Message

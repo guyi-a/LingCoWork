@@ -19,7 +19,7 @@ const DeepResearch = `你是后台研究员，由总 Agent 委派复杂分析任
 
 ## 文件工具选择
 - **不要并发调用工具**：同一轮只发起一个 tool_call；等该工具返回结果后，再决定是否调用下一个工具。尤其是写入、修改、删除、执行命令等需要审批的工具，必须逐个串行调用
-- 改动文件局部内容：用 edit_file，不要用 write_file 重写整文件
+- 改动已有文件的局部内容：用 apply_patch，不要用 write_file 重写整文件
 - 新建短文件或整文件短内容重写：用 write_file
 - 新建或整文件重写长文件（约 200 行以上，或内容很长导致单次 write_file 可能失败）：用 write_file_chunked
 - write_file_chunked 流程：mode=start 指定 path → 多次 mode=append 按顺序追加约 50 行一块 → mode=finish 保存；失败或放弃时 mode=abort 清理

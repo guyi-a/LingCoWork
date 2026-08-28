@@ -1,9 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useParams } from "react-router";
 import { useWorkspaceStore } from "./store";
 import { WorkspaceTree } from "./WorkspaceTree";
 import { FilePreview } from "./FilePreview";
 import { cn } from "@/lib/utils";
+import { WorkspaceDiffPanel } from "./WorkspaceDiff";
+import type { WorkspaceTab } from "./store";
+
+const WorkspaceTerminal = lazy(() =>
+  import("./WorkspaceTerminal").then((module) => ({
+    default: module.WorkspaceTerminal,
+  })),
+);
 
 export function WorkspacePanel({
   streaming,
@@ -18,6 +33,8 @@ export function WorkspacePanel({
   const previewWidth = useWorkspaceStore((s) => s.previewWidth);
   const setPreviewWidth = useWorkspaceStore((s) => s.setPreviewWidth);
   const refreshFiles = useWorkspaceStore((s) => s.refreshFiles);
+  const activeTab = useWorkspaceStore((s) => s.activeTab);
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const resetConversationState = useWorkspaceStore(
     (s) => s.resetConversationState,
   );
@@ -25,6 +42,13 @@ export function WorkspacePanel({
   const startWidthRef = useRef(previewWidth);
   const previousConversationIdRef = useRef<string | undefined>(conversationId);
   const [resizing, setResizing] = useState(false);
+  const [terminalMounted, setTerminalMounted] = useState(
+    panelOpen && activeTab === "terminal",
+  );
+
+  useEffect(() => {
+    if (panelOpen && activeTab === "terminal") setTerminalMounted(true);
+  }, [activeTab, panelOpen]);
 
   useEffect(() => {
     if (!conversationId) return;
@@ -35,13 +59,12 @@ export function WorkspacePanel({
 
   const onPointerDown = useCallback(
     (event: React.PointerEvent) => {
-      if (!previewPath) return;
       event.preventDefault();
       startXRef.current = event.clientX;
       startWidthRef.current = previewWidth;
       setResizing(true);
     },
-    [previewPath, previewWidth],
+    [previewWidth],
   );
 
   useEffect(() => {
@@ -68,42 +91,107 @@ export function WorkspacePanel({
     return () => window.clearInterval(interval);
   }, [conversationId, panelOpen, refreshFiles, streaming]);
 
-  if (!panelOpen || !conversationId) return null;
+  if (!conversationId) return null;
 
   return (
     <aside
       className={cn(
         "relative shrink-0 flex flex-col min-h-0 p-3",
+        !panelOpen && "hidden",
         !resizing && "transition-[width] duration-200 ease-out",
         resizing && "select-none",
       )}
-      style={{ width: previewPath ? previewWidth : 320 }}
+      style={{ width: previewWidth }}
     >
-      {previewPath && (
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="调整文件预览宽度"
-          tabIndex={0}
-          onPointerDown={onPointerDown}
-          className={cn(
-            "absolute left-0 top-0 z-20 h-full w-2 cursor-col-resize",
-            "before:absolute before:left-3 before:top-3 before:bottom-3 before:w-px before:bg-rule/80",
-            "after:absolute after:left-2 after:top-3 after:bottom-3 after:w-1 after:rounded-full after:bg-transparent hover:after:bg-accent/20",
-          )}
-        />
-      )}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整 Workspace 面板宽度"
+        tabIndex={0}
+        onPointerDown={onPointerDown}
+        className={cn(
+          "absolute left-0 top-0 z-20 h-full w-2 cursor-col-resize",
+          "before:absolute before:left-3 before:top-3 before:bottom-3 before:w-px before:bg-rule/80",
+          "after:absolute after:left-2 after:top-3 after:bottom-3 after:w-1 after:rounded-full after:bg-transparent hover:after:bg-accent/20",
+        )}
+      />
       <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-rule bg-paper overflow-hidden">
-        {previewPath ? (
-          <FilePreview
+        <WorkspaceTabs active={activeTab} onChange={setActiveTab} />
+        {activeTab === "files" &&
+          (previewPath ? (
+            <FilePreview
+              conversationId={conversationId}
+              path={previewPath}
+              projectId={projectId}
+            />
+          ) : (
+            <WorkspaceTree
+              conversationId={conversationId}
+              projectId={projectId}
+            />
+          ))}
+        {activeTab === "diff" && (
+          <WorkspaceDiffPanel
             conversationId={conversationId}
-            path={previewPath}
             projectId={projectId}
           />
-        ) : (
-          <WorkspaceTree conversationId={conversationId} projectId={projectId} />
+        )}
+        {terminalMounted && (
+          <div
+            className={cn(
+              "min-h-0 flex-1",
+              activeTab === "terminal" ? "flex" : "hidden",
+            )}
+          >
+            <Suspense
+              fallback={
+                <div className="flex flex-1 items-center justify-center bg-[#171717] font-mono text-[10px] text-white/40">
+                  Loading terminal…
+                </div>
+              }
+            >
+              <WorkspaceTerminal
+                conversationId={conversationId}
+                projectId={projectId}
+                active={panelOpen && activeTab === "terminal"}
+              />
+            </Suspense>
+          </div>
         )}
       </div>
     </aside>
+  );
+}
+
+function WorkspaceTabs({
+  active,
+  onChange,
+}: {
+  active: WorkspaceTab;
+  onChange: (tab: WorkspaceTab) => void;
+}) {
+  const tabs: Array<{ id: WorkspaceTab; label: string }> = [
+    { id: "files", label: "Files" },
+    { id: "diff", label: "Diff" },
+    { id: "terminal", label: "Terminal" },
+  ];
+  return (
+    <div className="flex h-9 shrink-0 items-end gap-1 border-b border-rule px-2">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          onClick={() => onChange(tab.id)}
+          className={cn(
+            "relative h-8 px-2 text-[10px] font-mono uppercase tracking-[0.12em] transition-colors",
+            active === tab.id ? "text-ink" : "text-muted hover:text-ink",
+            active === tab.id &&
+              "after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:bg-accent",
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
   );
 }

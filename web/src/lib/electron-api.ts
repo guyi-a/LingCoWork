@@ -2,8 +2,8 @@
  * Electron renderer-side bridge. Mirrors the shape exposed by
  * electron/src/preload/preload.ts — must stay in sync.
  *
- * The whole app runs inside the Electron shell (see dev.sh), so `electronAPI`
- * is assumed to exist. No browser-mode fallback.
+ * Most native operations require Electron. Browser mode can still use the
+ * HTTP API, so callers must check isElectron before invoking native pickers.
  */
 
 export interface PickedLocalFile {
@@ -21,6 +21,7 @@ export interface ElectronAPI {
   readonly runtimeConfig: {
     readonly apiBase: string;
   };
+  pickDirectory: () => Promise<string | null>;
   pickFiles: () => Promise<PickedLocalFile[]>;
   savePastedImage: (
     bytes: Uint8Array,
@@ -31,11 +32,23 @@ export interface ElectronAPI {
 
 declare global {
   interface Window {
-    electronAPI: ElectronAPI;
+    electronAPI?: ElectronAPI;
   }
 }
 
-export const electronAPI: ElectronAPI = window.electronAPI;
+export const electronAPI = window.electronAPI;
+export const isElectron = electronAPI !== undefined;
+
+export async function chooseWorkspaceDirectory(): Promise<string | null> {
+  if (electronAPI) {
+    return electronAPI.pickDirectory();
+  }
+  const value = window.prompt(
+    "请输入后端所在机器上的工作区绝对路径。浏览器无法打开系统目录选择器。",
+  );
+  const path = value?.trim() ?? "";
+  return path || null;
+}
 
 // Image extensions we treat as "inline this via the multimodal channel" —
 // same set the backend accepts in internal/agent/multimodal/attachments.go.

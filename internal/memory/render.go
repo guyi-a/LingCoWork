@@ -41,7 +41,7 @@ func RenderSnippet(userContent, projectContent, projectPath string) string {
 	if projectPath != "" {
 		b.WriteString(fmt.Sprintf("- 项目约定（技术栈、构建命令、目录规范、不要动的文件）写入 %s。\n", projectPath))
 	} else {
-		b.WriteString("- 当前会话没有绑定工作区，只能写用户偏好；项目约定需要先建工作区。\n")
+		b.WriteString("- 当前会话没有绑定工作区，只能写用户偏好；项目约定需要先由用户选择工作区文件夹。\n")
 	}
 	b.WriteString("- 只记跨对话仍然成立的偏好与约定；一次性的任务细节不要记。\n")
 	b.WriteString("- 日期只说明这条什么时候记下的，不代表它过期了。\n")

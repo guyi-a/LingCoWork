@@ -75,9 +75,14 @@
   padding: 0;
 }
 .shiki-host .line {
-  display: block;
+  display: inline-block;
+  min-width: 100%;
   padding-right: 12px;
   margin: 0;
+}
+.shiki-host .line.shiki-line-target {
+  background: color-mix(in oklab, var(--color-accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 .shiki-host .line:empty::before {
   content: "\00a0";

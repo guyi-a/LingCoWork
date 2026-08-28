@@ -46,6 +46,8 @@ export function FilePreview({
   projectId?: string;
 }) {
   const closePreview = useWorkspaceStore((s) => s.closePreview);
+  const previewLine = useWorkspaceStore((s) => s.previewLine);
+  const filesVersion = useWorkspaceStore((s) => s.filesVersion);
   const switcherOpen = useWorkspaceStore((s) => s.switcherOpen);
   const toggleSwitcher = useWorkspaceStore((s) => s.toggleSwitcher);
 
@@ -80,7 +82,14 @@ export function FilePreview({
       })
       .finally(() => setLoading(false));
     return () => ac.abort();
-  }, [closePreview, conversationId, inlineKind, path, projectId]);
+  }, [
+    closePreview,
+    conversationId,
+    filesVersion,
+    inlineKind,
+    path,
+    projectId,
+  ]);
 
   return (
     <div className="relative flex flex-col min-h-0 flex-1">
@@ -123,6 +132,7 @@ export function FilePreview({
             conversationId={conversationId}
             path={path}
             projectId={projectId}
+            version={filesVersion}
           />
         )}
         {inlineKind === "docx" && (
@@ -131,6 +141,7 @@ export function FilePreview({
             path={path}
             name={basename(path)}
             projectId={projectId}
+            version={filesVersion}
           />
         )}
         {inlineKind === "pptx" && (
@@ -139,6 +150,7 @@ export function FilePreview({
             path={path}
             name={basename(path)}
             projectId={projectId}
+            version={filesVersion}
           />
         )}
         {inlineKind === "video" && (
@@ -148,6 +160,7 @@ export function FilePreview({
             name={basename(path)}
             kind="video"
             projectId={projectId}
+            version={filesVersion}
           />
         )}
         {inlineKind === "audio" && (
@@ -157,6 +170,7 @@ export function FilePreview({
             name={basename(path)}
             kind="audio"
             projectId={projectId}
+            version={filesVersion}
           />
         )}
 
@@ -176,7 +190,11 @@ export function FilePreview({
               (isTablePath(file.path) ? (
                 <TablePreview content={file.content} path={file.path} />
               ) : (
-                <CodePreview content={file.content} fileName={file.name} />
+                <CodePreview
+                  content={file.content}
+                  fileName={file.name}
+                  highlightLine={previewLine}
+                />
               ))}
             {file.kind === "image" && (
               <ImageRenderer
@@ -184,6 +202,7 @@ export function FilePreview({
                 path={file.path}
                 name={file.name}
                 projectId={projectId}
+                version={filesVersion}
               />
             )}
             {(file.kind === "binary" || file.kind === "unsupported") && (

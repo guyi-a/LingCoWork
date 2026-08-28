@@ -3,7 +3,6 @@ import { NavLink, useNavigate } from "react-router";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
 import { MemoryEditor, MemoryIcon } from "@/features/memory/MemoryEditor";
-import { ConversationItem } from "./ConversationItem";
 import { ProjectGroup } from "./ProjectGroup";
 
 export function Sidebar() {
@@ -21,19 +20,16 @@ export function Sidebar() {
     refreshProjects();
   }, [refreshConv, refreshProjects]);
 
-  const { adhocConversations, byProject } = useMemo(() => {
-    const adhoc: typeof conversations = [];
+  const byProject = useMemo(() => {
     const byPid = new Map<string, typeof conversations>();
     for (const c of conversations) {
       if (c.project_id) {
         const list = byPid.get(c.project_id) ?? [];
         list.push(c);
         byPid.set(c.project_id, list);
-      } else {
-        adhoc.push(c);
       }
     }
-    return { adhocConversations: adhoc, byProject: byPid };
+    return byPid;
   }, [conversations]);
 
   const onNew = () => navigate("/");
@@ -88,7 +84,7 @@ export function Sidebar() {
               </button>
             </div>
 
-            <GroupLabel label="Projects" count={projects.length} />
+            <GroupLabel label="项目" count={projects.length} />
             <div className="mb-3">
               {projects.length === 0 ? (
                 <p className="px-2.5 py-1 text-[11px] text-muted/70">还没有项目</p>
@@ -103,20 +99,8 @@ export function Sidebar() {
               )}
             </div>
 
-            {(adhocConversations.length > 0 ||
-              (convLoading && conversations.length === 0)) && (
-              <>
-                <GroupLabel label="Ad-hoc" count={adhocConversations.length} />
-                <ul>
-                  {convLoading && conversations.length === 0 ? (
-                    <li className="px-2.5 py-2 text-xs text-muted">加载中…</li>
-                  ) : (
-                    adhocConversations.map((c) => (
-                      <ConversationItem key={c.id} item={c} />
-                    ))
-                  )}
-                </ul>
-              </>
+            {convLoading && conversations.length === 0 && (
+              <p className="px-2.5 py-2 text-xs text-muted">加载中…</p>
             )}
           </div>
         </nav>

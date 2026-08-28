@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { PromptInput } from "@/features/chat/PromptInput";
 import { AttachmentChips } from "@/features/chat/AttachmentChips";
@@ -7,9 +7,13 @@ import {
   saveImageFiles,
   type AttachedFile,
 } from "@/features/chat/attachments-store";
-import { electronAPI } from "@/lib/electron-api";
+import {
+  chooseWorkspaceDirectory,
+  electronAPI,
+} from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
-import type { Instruction } from "@/lib/api";
+import type { Instruction, ProjectItem } from "@/lib/api";
+import { useProjectStore } from "@/stores/projects";
 
 // Stable empty array — see attachments-store notes on why the selector
 // must not return a fresh literal each render.
@@ -29,14 +33,39 @@ export function Home() {
     (s) => s.pending[draftId] ?? EMPTY_ATTACHMENTS,
   );
   const addAttachments = useAttachmentsStore((s) => s.add);
+  const openFolder = useProjectStore((s) => s.openFolder);
+  const [project, setProject] = useState<ProjectItem | null>(null);
+  const [workspacePending, setWorkspacePending] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
 
   const onSend = (text: string, instruction?: Instruction) => {
+    if (!project) return;
     navigate(`/c/${draftId}`, {
-      state: { pending: text, pendingInstruction: instruction },
+      state: {
+        pending: text,
+        pendingInstruction: instruction,
+        projectId: project.id,
+      },
     });
   };
 
+  const onPickWorkspace = useCallback(async () => {
+    setWorkspaceError("");
+    setWorkspacePending(true);
+    try {
+      const path = await chooseWorkspaceDirectory();
+      if (!path) return;
+      const selected = await openFolder(path);
+      setProject(selected);
+    } catch (err) {
+      setWorkspaceError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWorkspacePending(false);
+    }
+  }, [openFolder]);
+
   const onPickFiles = useCallback(async () => {
+    if (!electronAPI) return;
     try {
       const picked = await electronAPI.pickFiles();
       if (picked.length > 0) addAttachments(draftId, picked);
@@ -50,6 +79,7 @@ export function Home() {
   // dropped here appear as chips on both pages.
   const onImageFiles = useCallback(
     (files: File[]) => {
+      if (!electronAPI) return;
       void saveImageFiles(draftId, files, electronAPI.savePastedImage, addAttachments);
     },
     [draftId, addAttachments],
@@ -58,28 +88,93 @@ export function Home() {
   return (
     <>
       <header className="shrink-0 h-6 drag-region" aria-hidden />
-      <div className="flex-1 flex items-center justify-center">
-        <div className="max-w-md text-center px-8">
-          <div className="font-mono text-[10px] tracking-[0.2em] uppercase text-muted mb-4">
-            LingCoWork · Co-work · with AI
+      <div className="flex min-h-0 flex-1 items-center overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl py-10">
+          <div className="px-8 text-center">
+            <div className="mb-4 font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
+              LingCoWork · Co-work · with AI
+            </div>
+            <h2 className="mb-3 text-2xl">跟 LingCoWork 一起开工</h2>
+            <p className="text-sm leading-relaxed text-muted">
+              选择一个工作区，然后告诉我你想完成什么。
+            </p>
           </div>
-          <h2 className="text-2xl mb-3">跟 LingCoWork 一起开工</h2>
-          <p className="text-sm text-muted leading-relaxed">
-            在下方输入以开始，或从左侧打开已有会话。
-            模型的推理过程会作为边注呈现。
-          </p>
+
+          <div className="mt-7">
+            <PromptInput
+              streaming={false}
+              blocked={!project || workspacePending}
+              placeholder={
+                project
+                  ? "描述你想在这个工作区完成的任务"
+                  : "请先选择工作区"
+              }
+              blockedHint="请先选择工作区"
+              onSend={onSend}
+              onCancel={() => {}}
+              hasAttachments={attachments.length > 0}
+              topSlot={
+                <>
+                  <AttachmentChips conversationID={draftId} />
+                  {workspaceError && (
+                    <p className="px-5 pt-3 text-xs text-red-600">
+                      {workspaceError}
+                    </p>
+                  )}
+                </>
+              }
+              leftActions={
+                <div className="flex min-w-0 items-center gap-2">
+                  <WorkspaceChip
+                    project={project}
+                    pending={workspacePending}
+                    onClick={onPickWorkspace}
+                  />
+                  {project && electronAPI && (
+                    <AttachButton onClick={onPickFiles} />
+                  )}
+                </div>
+              }
+              onImageFiles={project && electronAPI ? onImageFiles : undefined}
+            />
+          </div>
+
         </div>
       </div>
-      <PromptInput
-        streaming={false}
-        onSend={onSend}
-        onCancel={() => {}}
-        hasAttachments={attachments.length > 0}
-        topSlot={<AttachmentChips conversationID={draftId} />}
-        leftActions={<AttachButton onClick={onPickFiles} />}
-        onImageFiles={onImageFiles}
-      />
     </>
+  );
+}
+
+function WorkspaceChip({
+  project,
+  pending,
+  onClick,
+}: {
+  project: ProjectItem | null;
+  pending: boolean;
+  onClick: () => void;
+}) {
+  const label = pending
+    ? "正在打开…"
+    : project?.name ?? "选择工作区";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      title={project?.workspace ?? "选择已有文件夹作为工作区"}
+      className={cn(
+        "inline-flex h-7 min-w-0 max-w-52 items-center gap-1.5 rounded-md border px-2 text-[12px] transition-colors",
+        project
+          ? "border-accent/40 bg-subtle text-ink"
+          : "border-rule bg-paper text-accent hover:bg-subtle",
+        "disabled:cursor-not-allowed disabled:opacity-60",
+      )}
+    >
+      <FolderIcon />
+      <span className="truncate">{label}</span>
+      <ChevronDownIcon />
+    </button>
   );
 }
 
@@ -107,6 +202,40 @@ function PlusIcon() {
       strokeLinecap="round" strokeLinejoin="round"
       className="size-3.5" aria-hidden>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-4 shrink-0 text-muted"
+      aria-hidden
+    >
+      <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-10Z" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-3 shrink-0 text-muted"
+      aria-hidden
+    >
+      <path d="m4 6 4 4 4-4" />
     </svg>
   );
 }

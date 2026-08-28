@@ -5,13 +5,15 @@ export function ImageRenderer({
   path,
   name,
   projectId,
+  version,
 }: {
   conversationId: string;
   path: string;
   name: string;
   projectId?: string;
+  version?: number;
 }) {
-  const src = workspaceDownloadURL(conversationId, path, { projectId });
+  const src = workspaceDownloadURL(conversationId, path, { projectId, version });
   return (
     <div className="flex h-full min-h-0 items-center justify-center overflow-auto bg-subtle p-6">
       <img

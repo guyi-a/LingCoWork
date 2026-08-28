@@ -6,14 +6,16 @@ export function MediaPreview({
   name,
   kind,
   projectId,
+  version,
 }: {
   conversationId: string;
   path: string;
   name: string;
   kind: "video" | "audio";
   projectId?: string;
+  version?: number;
 }) {
-  const src = workspaceInlineURL(conversationId, path, { projectId });
+  const src = workspaceInlineURL(conversationId, path, { projectId, version });
   const downloadHref = workspaceDownloadURL(conversationId, path, { projectId });
 
   return (

@@ -16,7 +16,7 @@ import (
 )
 
 // ThresholdTokens is the estimated context size at which compaction fires.
-// With the defaults: floor(128000*0.85) - 8000 - 4000 = 96800.
+// With the defaults: floor(1000000*0.90) - 32000 - 20000 = 848000.
 //
 // The floor keeps a nonsensical configuration (tiny window, huge reserve)
 // from producing a threshold so low that every turn compacts.

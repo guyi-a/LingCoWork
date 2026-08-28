@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   deleteProject,
   listProjects,
+  openProject,
   openProjectInFinder,
   renameProject,
   type ProjectItem,
@@ -11,6 +12,7 @@ interface ProjectStore {
   items: ProjectItem[];
   loading: boolean;
   refresh: () => Promise<void>;
+  openFolder: (path: string, name?: string) => Promise<ProjectItem>;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string) => Promise<string | undefined>; // returns warning if any
   openInFinder: (id: string) => Promise<void>;
@@ -29,6 +31,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       console.error("[projects] refresh failed:", err);
       set({ loading: false });
     }
+  },
+
+  openFolder: async (path, name) => {
+    const { project } = await openProject(path, name);
+    set((state) => ({
+      items: [project, ...state.items.filter((item) => item.id !== project.id)],
+    }));
+    return project;
   },
 
   rename: async (id, name) => {

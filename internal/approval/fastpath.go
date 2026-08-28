@@ -36,15 +36,25 @@ func pathIsSensitive(path string) (string, bool) {
 	return "", false
 }
 
+// PathIsSensitive exposes the same cheap path classifier to bounded workspace
+// search tools. Search cannot ask for approval once per discovered file, so it
+// omits known credential paths before reading them. Keeping one classifier
+// prevents search and write approval from drifting apart.
+func PathIsSensitive(path string) (string, bool) {
+	return pathIsSensitive(path)
+}
+
 var (
 	// Exact-match basenames or family prefixes for common credential /
 	// system-config files. Match runs on individual path segments, so we
 	// use a small set of literals plus a couple of family predicates.
 	sensitiveExactBasename = map[string]bool{
-		".npmrc":     true,
-		".pypirc":    true,
-		".netrc":     true,
-		".gitconfig": true,
+		".npmrc":           true,
+		".pypirc":          true,
+		".netrc":           true,
+		".gitconfig":       true,
+		"credentials.json": true,
+		"mcp.json":         true,
 	}
 	// Directory names that should not be silently written into.
 	sensitiveDirname = map[string]bool{
@@ -68,10 +78,6 @@ func sensitiveSegment(seg string) (string, bool) {
 	}
 	if sensitiveExactBasename[seg] {
 		return "sensitive basename: " + seg, true
-	}
-	// .env, .env.local, .env.production, .env.example, ...
-	if seg == ".env" || strings.HasPrefix(seg, ".env.") {
-		return "dotenv file: " + seg, true
 	}
 	if sshKeyPrefixRE.MatchString(seg) {
 		return "ssh key file: " + seg, true

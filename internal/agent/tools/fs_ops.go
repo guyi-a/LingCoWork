@@ -19,7 +19,7 @@ import (
 // --- rm ---
 
 type RmInput struct {
-	Path      string `json:"path" jsonschema:"description=Path to delete. Absolute local path (anywhere on the user's machine) or workspace-relative. Only list a path when the user explicitly names it; don't clean up outside the workspace on your own."`
+	Path      string `json:"path" jsonschema:"description=Path to delete. Must be workspace-relative or an absolute path inside the selected workspace."`
 	Recursive bool   `json:"recursive" jsonschema:"description=If true\\, recursively delete a directory and all its contents (rm -rf). If false (default)\\, only delete a file or an EMPTY directory."`
 }
 
@@ -33,11 +33,11 @@ func newRmTool(d *fsDeps) (tool.BaseTool, error) {
 		if in.Path == "" {
 			return nil, fmt.Errorf("path is required")
 		}
-		ws, wsErr := d.resolveWorkspace(ctx)
-		if wsErr != nil && !filepath.IsAbs(in.Path) {
-			return nil, wsErr
+		ws, err := d.resolveWorkspace(ctx)
+		if err != nil {
+			return nil, err
 		}
-		abs, err := scope.ResolveRead(ws, in.Path)
+		abs, err := scope.Resolve(ws, in.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +75,7 @@ func newRmTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"rm",
-		"Delete a file or directory. Accepts an absolute local path (anywhere on the user's machine) or a workspace-relative path. By default only deletes files or empty directories — pass recursive=true to delete a directory and all its contents (rm -rf semantics). Refuses to delete the workspace root. Only delete a path when the user explicitly names it; there is no trash / undo.",
+		"Delete a file or directory inside the selected workspace. By default only deletes files or empty directories — pass recursive=true to delete a directory and all its contents (rm -rf semantics). Refuses paths outside the workspace, symlink escapes, and deletion of the workspace root. There is no trash / undo.",
 		fn,
 	)
 }
@@ -83,8 +83,8 @@ func newRmTool(d *fsDeps) (tool.BaseTool, error) {
 // --- mv ---
 
 type MvInput struct {
-	Src string `json:"src" jsonschema:"description=Source path. Absolute local path (anywhere on the user's machine) or workspace-relative. Source is deleted after the move."`
-	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory\\, src is moved INTO it (as dst/basename(src)). If dst does not exist\\, src is renamed to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
+	Src string `json:"src" jsonschema:"description=Source path inside the selected workspace. Source is deleted after the move."`
+	Dst string `json:"dst" jsonschema:"description=Destination path inside the selected workspace. If dst is an existing directory\\, src is moved INTO it (as dst/basename(src)). If dst does not exist\\, src is renamed to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
 }
 
 type MvOutput struct {
@@ -97,15 +97,15 @@ func newMvTool(d *fsDeps) (tool.BaseTool, error) {
 		if in.Src == "" || in.Dst == "" {
 			return nil, fmt.Errorf("src and dst are required")
 		}
-		ws, wsErr := d.resolveWorkspace(ctx)
-		if wsErr != nil && (!filepath.IsAbs(in.Src) || !filepath.IsAbs(in.Dst)) {
-			return nil, wsErr
+		ws, err := d.resolveWorkspace(ctx)
+		if err != nil {
+			return nil, err
 		}
-		srcAbs, err := scope.ResolveRead(ws, in.Src)
+		srcAbs, err := scope.Resolve(ws, in.Src)
 		if err != nil {
 			return nil, fmt.Errorf("src: %w", err)
 		}
-		dstAbs, err := scope.ResolveRead(ws, in.Dst)
+		dstAbs, err := scope.Resolve(ws, in.Dst)
 		if err != nil {
 			return nil, fmt.Errorf("dst: %w", err)
 		}
@@ -126,6 +126,10 @@ func newMvTool(d *fsDeps) (tool.BaseTool, error) {
 		if st, err := os.Lstat(dstAbs); err == nil {
 			if st.IsDir() {
 				finalDst = filepath.Join(dstAbs, filepath.Base(srcAbs))
+				finalDst, err = scope.Resolve(ws, finalDst)
+				if err != nil {
+					return nil, fmt.Errorf("dst: %w", err)
+				}
 				if _, err := os.Lstat(finalDst); err == nil {
 					return nil, fmt.Errorf("target %q already exists in destination directory; delete it first", filepath.Base(srcAbs))
 				}
@@ -156,7 +160,7 @@ func newMvTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"mv",
-		"Move or rename a file or directory. Accepts absolute local paths or workspace-relative paths for both src and dst. If dst is an existing directory, src is moved into it. If dst does not exist, src is renamed to dst (parent dir is auto-created). Refuses to overwrite an existing file/directory at dst — delete it first. Refuses to move the workspace root. Only move paths the user explicitly names.",
+		"Move or rename a file or directory inside the selected workspace. If dst is an existing directory, src is moved into it. If dst does not exist, src is renamed to dst (parent dir is auto-created). Refuses paths outside the workspace, symlink escapes, overwrites, and moving the workspace root.",
 		fn,
 	)
 }
@@ -165,7 +169,7 @@ func newMvTool(d *fsDeps) (tool.BaseTool, error) {
 
 type CpInput struct {
 	Src string `json:"src" jsonschema:"description=Source path. Absolute local path (anywhere on the user's machine) or workspace-relative. Copied read-only\\, source is untouched."`
-	Dst string `json:"dst" jsonschema:"description=Destination path. Absolute local path or workspace-relative. If dst is an existing directory\\, src is copied INTO it (as dst/basename(src)). If dst does not exist\\, src is copied to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
+	Dst string `json:"dst" jsonschema:"description=Destination path inside the selected workspace. If dst is an existing directory\\, src is copied INTO it (as dst/basename(src)). If dst does not exist\\, src is copied to dst (parent directory is created if missing). If dst is an existing file\\, the call is REJECTED — delete dst first."`
 }
 
 type CpOutput struct {
@@ -179,15 +183,15 @@ func newCpTool(d *fsDeps) (tool.BaseTool, error) {
 		if in.Src == "" || in.Dst == "" {
 			return nil, fmt.Errorf("src and dst are required")
 		}
-		ws, wsErr := d.resolveWorkspace(ctx)
-		if wsErr != nil && (!filepath.IsAbs(in.Src) || !filepath.IsAbs(in.Dst)) {
-			return nil, wsErr
+		ws, err := d.resolveWorkspace(ctx)
+		if err != nil {
+			return nil, err
 		}
 		srcAbs, err := scope.ResolveRead(ws, in.Src)
 		if err != nil {
 			return nil, fmt.Errorf("src: %w", err)
 		}
-		dstAbs, err := scope.ResolveRead(ws, in.Dst)
+		dstAbs, err := scope.Resolve(ws, in.Dst)
 		if err != nil {
 			return nil, fmt.Errorf("dst: %w", err)
 		}
@@ -203,6 +207,10 @@ func newCpTool(d *fsDeps) (tool.BaseTool, error) {
 		if st, err := os.Lstat(dstAbs); err == nil {
 			if st.IsDir() {
 				finalDst = filepath.Join(dstAbs, filepath.Base(srcAbs))
+				finalDst, err = scope.Resolve(ws, finalDst)
+				if err != nil {
+					return nil, fmt.Errorf("dst: %w", err)
+				}
 				if _, err := os.Lstat(finalDst); err == nil {
 					return nil, fmt.Errorf("target %q already exists in destination directory; delete it first", filepath.Base(srcAbs))
 				}
@@ -224,7 +232,7 @@ func newCpTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"cp",
-		"Copy a file or directory. Accepts absolute local paths or workspace-relative paths for both src and dst. Directories are copied recursively. If dst is an existing directory, src is copied into it. Refuses to overwrite an existing file/directory at dst — delete it first.",
+		"Copy a file or directory into the selected workspace. The read-only source may be an absolute local path, but the destination must remain inside the workspace and cannot escape through symlinks. Directories are copied recursively. Refuses to overwrite an existing target.",
 		fn,
 	)
 }

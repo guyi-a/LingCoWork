@@ -14,7 +14,7 @@ import (
 )
 
 // remember 只管用户级记忆。项目级那份落在工作区根，模型用现成的 write_file /
-// edit_file 就能改，审批门槛由 effects.go 的路径识别兜住 —— 再给它一个专用动作
+// apply_patch 就能改，审批门槛由 effects.go 的路径识别兜住 —— 再给它一个专用动作
 // 只会多一条模型要记住的规则。
 type rememberInput struct {
 	Action string `json:"action" jsonschema:"description=append (add one entry) or rewrite (replace the whole file\\, used to merge or drop entries),enum=append,enum=rewrite"`

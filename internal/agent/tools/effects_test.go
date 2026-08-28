@@ -130,6 +130,23 @@ func TestEveryBuiltinToolHasADeriver(t *testing.T) {
 	}
 }
 
+func TestDeriveCodingToolEffects(t *testing.T) {
+	reg := effect.NewRegistry()
+	registerEffects(reg, &fsDeps{})
+	ctx := context.Background()
+
+	for _, name := range []string{"glob", "grep"} {
+		got := reg.Derive(ctx, name, `{"path":".","pattern":"needle"}`)
+		if got.Kind != effect.KindFileRead {
+			t.Errorf("%s kind = %q, want file-read", name, got.Kind)
+		}
+	}
+	patch := reg.Derive(ctx, "apply_patch", `{"path":"main.go","patch":"@@\n-old\n+new"}`)
+	if patch.Kind != effect.KindFileWrite {
+		t.Errorf("apply_patch kind = %q, want file-write", patch.Kind)
+	}
+}
+
 func TestDeriveShellEffect(t *testing.T) {
 	reg := effect.NewRegistry()
 	registerEffects(reg, &fsDeps{})

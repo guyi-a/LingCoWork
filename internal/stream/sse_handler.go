@@ -59,7 +59,7 @@ type Frame struct {
 	// context cancellation was enough to mislabel a perfectly good call.
 	Cancelled bool `json:"cancelled,omitempty"`
 
-	// Project bound (emitted by create_workspace tool, not by this handler)
+	// Legacy project-bound frame kept for replay compatibility.
 	ProjectID     string `json:"project_id,omitempty"`
 	ProjectName   string `json:"project_name,omitempty"`
 	WorkspacePath string `json:"workspace_path,omitempty"`

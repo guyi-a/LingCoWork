@@ -42,13 +42,12 @@ export function PromptInput({
   topSlot,
   hasAttachments = false,
   onImageFiles,
+  placeholder,
+  blockedHint,
 }: {
   streaming: boolean;
-  // Hard stop on submitting: a HITL interrupt is waiting for the user. The
-  // dock covers this composer visually, but the textarea is still in the
-  // DOM and may hold focus, and a POST right now would start a second run
-  // beside the paused checkpoint. Draft text is kept — the user gets it
-  // back once they answer.
+  // Hard stop on submitting. Used for HITL interrupts and preconditions such
+  // as choosing a workspace. Draft text remains editable and is preserved.
   blocked?: boolean;
   // Called on submit regardless of `streaming`. It's the caller's job to
   // decide between sending now and queueing.
@@ -74,6 +73,10 @@ export function PromptInput({
   // clipboard/drop content (plain text, non-image files) is left alone so
   // native paste/drop behaviour still works.
   onImageFiles?: (files: File[]) => void;
+  // Lets non-HITL callers explain why submission is blocked without reusing
+  // the approval-specific copy.
+  placeholder?: string;
+  blockedHint?: string;
 }) {
   const [text, setText] = useState("");
   const [instructions, setInstructions] = useState<Instruction[]>([]);
@@ -326,11 +329,12 @@ export function PromptInput({
             aria-expanded={slashPickerOpen}
             aria-controls={slashPickerOpen ? "instruction-picker" : undefined}
             placeholder={
-              blocked
+              placeholder ??
+              (blocked
                 ? "先回答上面的问题"
                 : streaming
                   ? "响应中 · 继续输入会排队"
-                  : "写点什么"
+                  : "写点什么")
             }
             className={cn(
               "block w-full resize-none bg-transparent px-5 pt-4 pb-2",
@@ -346,7 +350,7 @@ export function PromptInput({
               {leftActions ?? (
                 <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
                   {blocked
-                    ? "等待你的回答"
+                    ? (blockedHint ?? "等待你的回答")
                     : streaming
                       ? "Enter 加入队列 · Shift+Enter 换行"
                       : "Enter 发送 · Shift+Enter 换行"}

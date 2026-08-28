@@ -10,7 +10,7 @@ const FileName = "memory.md"
 
 // ProjectPath 是"项目级记忆在哪"的唯一定义。中间件靠它读、审批靠它认路径、
 // HTTP 靠它写 —— 三处各写一遍 filepath.Join 就是等着它们哪天对不上。
-// workspaceRoot 为空（临时对话）时返回空串。
+// workspaceRoot 为空时返回空串。
 func ProjectPath(workspaceRoot string) string {
 	if workspaceRoot == "" {
 		return ""

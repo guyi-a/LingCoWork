@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -19,6 +20,7 @@ func NewProjectHandler(svc *service.ProjectService) *ProjectHandler {
 
 func (h *ProjectHandler) Register(r *gin.Engine) {
 	r.GET("/projects", h.List)
+	r.POST("/projects", h.Create)
 	r.GET("/projects/:id", h.Get)
 	r.PATCH("/projects/:id", h.Update)
 	r.DELETE("/projects/:id", h.Delete)
@@ -48,6 +50,41 @@ func (h *ProjectHandler) List(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"projects": out})
+}
+
+type createProjectRequest struct {
+	Path string `json:"path" binding:"required"`
+	Name string `json:"name"`
+}
+
+func (h *ProjectHandler) Create(c *gin.Context) {
+	var req createProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p, created, err := h.svc.OpenOrCreateFromPath(c.Request.Context(), req.Path, req.Name)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidWorkspace) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, gin.H{
+		"project": projectItem{
+			ID:        p.ID,
+			Name:      p.Name,
+			Workspace: p.Workspace,
+			UpdatedAt: p.UpdatedAt.Format(time.RFC3339),
+		},
+		"created": created,
+	})
 }
 
 func (h *ProjectHandler) Get(c *gin.Context) {
@@ -90,9 +127,7 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 func (h *ProjectHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
-		// 200 with warning instead of 500: DB row is gone, this is just a
-		// filesystem cleanup error worth surfacing.
-		c.JSON(http.StatusOK, gin.H{"warning": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Status(http.StatusNoContent)

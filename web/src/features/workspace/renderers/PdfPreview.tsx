@@ -4,12 +4,14 @@ export function PdfPreview({
   conversationId,
   path,
   projectId,
+  version,
 }: {
   conversationId: string;
   path: string;
   projectId?: string;
+  version?: number;
 }) {
-  const url = workspaceInlineURL(conversationId, path, { projectId });
+  const url = workspaceInlineURL(conversationId, path, { projectId, version });
   return (
     <div className="flex h-full min-h-0 flex-col bg-subtle">
       <iframe

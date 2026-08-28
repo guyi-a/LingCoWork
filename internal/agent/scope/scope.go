@@ -2,45 +2,48 @@ package scope
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
 
-// Resolve takes an absolute workspace root and a user-supplied path (which can
-// be absolute OR relative to the workspace), normalizes it, and verifies the
-// final absolute path stays inside the workspace.
+// Resolve validates a path that will be mutated. Both existing targets and
+// the nearest existing parent of new targets are resolved through symlinks,
+// so a lexical path inside the workspace cannot write through a symlink to
+// somewhere outside it.
 //
 // Returns the cleaned absolute path on success.
-//
-// This protects against:
-//   - `..` traversal escaping the workspace
-//   - Absolute paths pointing outside the workspace
-//   - Symlinks are NOT resolved here (open-time os.Stat will follow them);
-//     workspace owner is responsible for not creating malicious symlinks.
 func Resolve(workspaceRoot, userPath string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is empty")
 	}
-	absRoot, err := filepath.Abs(workspaceRoot)
+	if userPath == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	root, err := canonicalRoot(workspaceRoot)
 	if err != nil {
-		return "", fmt.Errorf("normalize workspace root: %w", err)
+		return "", err
 	}
 
 	var target string
 	if filepath.IsAbs(userPath) {
 		target = userPath
 	} else {
-		target = filepath.Join(absRoot, userPath)
+		target = filepath.Join(root, userPath)
 	}
 	target = filepath.Clean(target)
+	if !isWithin(root, target) {
+		return "", fmt.Errorf("path %q escapes workspace %q", userPath, root)
+	}
 
-	rel, err := filepath.Rel(absRoot, target)
+	resolvedBoundary, err := resolveExistingBoundary(target)
 	if err != nil {
-		return "", fmt.Errorf("resolve relative: %w", err)
+		return "", fmt.Errorf("resolve path %q: %w", userPath, err)
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes workspace %q", userPath, absRoot)
+	if !isWithin(root, resolvedBoundary) {
+		return "", fmt.Errorf("path %q escapes workspace %q through a symlink", userPath, root)
 	}
+
 	return target, nil
 }
 
@@ -50,9 +53,9 @@ func Resolve(workspaceRoot, userPath string) (string, error) {
 //   - Absolute userPath: cleaned and returned as-is. workspaceRoot is not
 //     consulted; may be empty (relevant when the conversation has no
 //     workspace bound but the caller wants to read a local file).
-//   - Relative userPath: resolved against workspaceRoot (which must be
-//     non-empty), and enforced to stay inside the root — same escape check
-//     as Resolve.
+//   - Relative userPath: resolved against workspaceRoot. Existing symlinks are
+//     evaluated so the effect layer can correctly classify a read that lands
+//     outside the workspace and ask for approval.
 //
 // This is intentionally more permissive than Resolve on the absolute-path
 // case: read tools trust the caller (single-user local machine), write tools
@@ -67,17 +70,70 @@ func ResolveRead(workspaceRoot, userPath string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("relative path %q requires a workspace; pass an absolute path or bind a workspace first", userPath)
 	}
-	absRoot, err := filepath.Abs(workspaceRoot)
+	root, err := canonicalRoot(workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Clean(filepath.Join(root, userPath))
+	if !isWithin(root, target) {
+		return "", fmt.Errorf("path %q escapes workspace %q", userPath, root)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve path %q: %w", userPath, err)
+	}
+	return target, nil
+}
+
+func canonicalRoot(workspaceRoot string) (string, error) {
+	absolute, err := filepath.Abs(filepath.Clean(workspaceRoot))
 	if err != nil {
 		return "", fmt.Errorf("normalize workspace root: %w", err)
 	}
-	target := filepath.Clean(filepath.Join(absRoot, userPath))
-	rel, err := filepath.Rel(absRoot, target)
+	resolved, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
-		return "", fmt.Errorf("resolve relative: %w", err)
+		return "", fmt.Errorf("resolve workspace root: %w", err)
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes workspace %q", userPath, absRoot)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect workspace root: %w", err)
 	}
-	return target, nil
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace root %q is not a directory", resolved)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// resolveExistingBoundary resolves target itself when it exists. For a new
+// target it resolves the closest parent that already exists, which is the
+// part of the path where a symlink could redirect a subsequent mkdir/write.
+func resolveExistingBoundary(target string) (string, error) {
+	current := target
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing parent for %q", target)
+		}
+		current = parent
+	}
+}
+
+func isWithin(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

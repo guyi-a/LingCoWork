@@ -130,7 +130,11 @@ type Frame = {
 
 const WORKSPACE_TOOL_NAMES = new Set([
   "write_file",
-  "edit_file",
+  "apply_patch",
+  "write_file_chunked",
+  "rm",
+  "mv",
+  "cp",
   "create_file",
   "delete_file",
   "rename_file",

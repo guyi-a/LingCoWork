@@ -35,7 +35,7 @@ const JobSearch = `你是招聘信息搜索员，由总 Agent 委派招聘搜索
 搜完之后**先写文件，再返回摘要给上游**。文件是给用户后续查阅、筛选、投递用的档案，摘要塞不下这么多信息。
 
 流程：
-1. 如果当前会话还没 workspace（agent 收到任务时能感知到），先调 create_workspace
+1. 当前会话必须已由用户选择 workspace；如果没有，先请用户在 LingCoWork 中选择文件夹
 2. 写到 jobs/<关键词>-<城市>-<日期>.md（比如 jobs/go-backend-beijing-2026-06-29.md）
    - 内容较短时用 write_file
    - 内容很长（约 200 行以上、岗位很多、或单次 write_file 可能失败）时用 write_file_chunked

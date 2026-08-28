@@ -17,10 +17,9 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
 )
 
-// Deps groups the dependencies the workspace + fs tools need at registration
-// time. They are captured into each tool's closure.
+// Deps groups the dependencies tools need at registration time. They are
+// captured into each tool's closure.
 type Deps struct {
-	WorkspaceRoot    string
 	ProjectRepo      *repository.ProjectRepo
 	ConversationRepo *repository.ConversationRepo
 	BrowserUseMgr    *browseruse.Manager
@@ -62,23 +61,18 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, *effect.Registry, er
 	}
 	out = append(out, askTool)
 
-	wsTool, err := NewCreateWorkspaceTool(d.WorkspaceRoot, d.ProjectRepo, d.ConversationRepo)
-	if err != nil {
-		return nil, nil, err
-	}
-	out = append(out, wsTool)
-
 	fs := &fsDeps{projectRepo: d.ProjectRepo, convRepo: d.ConversationRepo}
 	registerEffects(reg, fs)
 	for _, ctor := range []func(*fsDeps) (tool.BaseTool, error){
 		newFileInfoTool,
 		newListFilesTool,
+		newGlobTool,
+		newGrepTool,
 		newReadFileTool,
 		newExtractDocumentTextTool,
 		newWriteFileTool,
 		newChunkedWriteFileTool,
-		newEditFileTool,
-		newEditFileLinesTool,
+		newApplyPatchTool,
 		newMkdirTool,
 		newRmTool,
 		newMvTool,

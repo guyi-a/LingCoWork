@@ -13,8 +13,7 @@ const EMPTY: PendingApproval[] = [];
 // instead of showing a bare identifier.
 const TOOL_TITLES: Record<string, string> = {
   write_file: "写入文件",
-  edit_file: "修改文件",
-  edit_file_lines: "按行修改文件",
+  apply_patch: "应用代码补丁",
   write_file_chunked: "写入长文件",
   rm: "删除",
   mv: "移动 / 重命名",
@@ -22,6 +21,8 @@ const TOOL_TITLES: Record<string, string> = {
   run_command: "执行命令",
   read_file: "读取文件",
   list_files: "列出目录",
+  glob: "查找文件",
+  grep: "搜索代码",
   file_info: "查看文件信息",
   extract_document_text: "提取文档文本",
 };
@@ -127,16 +128,13 @@ function summarize(tool: string, argsJson: string): string | null {
   }
   switch (tool) {
     case "write_file":
-    case "edit_file":
+    case "apply_patch":
       return typeof args.path === "string" ? args.path : "";
-    case "edit_file_lines": {
-      const path = typeof args.path === "string" ? args.path : "";
-      const start = typeof args.start_line === "number" ? args.start_line : undefined;
-      const end = typeof args.end_line === "number" ? args.end_line : undefined;
-      if (path && start !== undefined && end !== undefined) {
-        return `${path} · L${start}-${end}`;
-      }
-      return path;
+    case "glob":
+    case "grep": {
+      const pattern = typeof args.pattern === "string" ? args.pattern : "";
+      const path = typeof args.path === "string" ? args.path : ".";
+      return pattern ? `${pattern} · in ${path}` : path;
     }
     case "write_file_chunked": {
       const path = typeof args.path === "string" ? args.path : "";

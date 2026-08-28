@@ -8,33 +8,6 @@ type TreeNode = {
   children: TreeNode[];
 };
 
-// 默认折叠的"重"目录：依赖 / 构建产物 / 缓存 / VCS，展开对用户没价值反而挡视线。
-// 补充规则：所有以 . 开头的目录也默认折叠（.qa/ .git/ .venv/ 等 Unix 隐藏目录约定）。
-const COLLAPSED_BY_DEFAULT = new Set([
-  "node_modules",
-  ".git",
-  ".svn",
-  ".hg",
-  "dist",
-  "build",
-  "out",
-  "target",
-  ".next",
-  ".nuxt",
-  ".turbo",
-  ".cache",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".pytest_cache",
-  ".mypy_cache",
-  ".ruff_cache",
-  ".tox",
-  "coverage",
-  ".idea",
-  ".vscode",
-]);
-
 export function buildWorkspaceTree(entries: WorkspaceTreeEntry[]): TreeNode[] {
   const byPath = new Map<string, TreeNode>();
   const roots: TreeNode[] = [];
@@ -135,7 +108,11 @@ export function WorkspaceTree({
         </span>
       </div>
       {entries && entries.length > 0 && (
-        <WorkspaceTreeList nodes={tree} className="flex-1 overflow-auto py-1 min-h-0" />
+        <WorkspaceTreeList
+          nodes={tree}
+          treeKey={projectId ?? conversationId}
+          className="flex-1 overflow-auto py-1 min-h-0"
+        />
       )}
     </div>
   );
@@ -143,10 +120,12 @@ export function WorkspaceTree({
 
 export function WorkspaceTreeList({
   nodes,
+  treeKey,
   className,
   compact = false,
 }: {
   nodes: TreeNode[];
+  treeKey: string;
   className?: string;
   compact?: boolean;
 }) {
@@ -156,6 +135,7 @@ export function WorkspaceTreeList({
         <TreeItem
           key={node.entry.path}
           node={node}
+          treeKey={treeKey}
           depth={0}
           compact={compact}
         />
@@ -166,18 +146,20 @@ export function WorkspaceTreeList({
 
 function TreeItem({
   node,
+  treeKey,
   depth,
   compact,
 }: {
   node: TreeNode;
+  treeKey: string;
   depth: number;
   compact: boolean;
 }) {
-  const [open, setOpen] = useState(
-    depth === 0 &&
-      !COLLAPSED_BY_DEFAULT.has(node.entry.name) &&
-      !node.entry.name.startsWith("."),
+  const directoryKey = `${treeKey}:${node.entry.path}`;
+  const open = useWorkspaceStore(
+    (s) => s.expandedDirectories[directoryKey] === true,
   );
+  const toggleDirectory = useWorkspaceStore((s) => s.toggleDirectory);
   const previewPath = useWorkspaceStore((s) => s.previewPath);
   const openFile = useWorkspaceStore((s) => s.openFile);
   const isActive = previewPath === node.entry.path;
@@ -187,7 +169,9 @@ function TreeItem({
     <li>
       <button
         type="button"
-        onClick={() => (isDir ? setOpen((o) => !o) : openFile(node.entry.path))}
+        onClick={() =>
+          isDir ? toggleDirectory(directoryKey) : openFile(node.entry.path)
+        }
         className={cn(
           "flex items-center gap-1.5 w-full text-left px-2 rounded",
           "hover:bg-subtle/70 transition-colors cursor-pointer",
@@ -209,6 +193,7 @@ function TreeItem({
             <TreeItem
               key={child.entry.path}
               node={child}
+              treeKey={treeKey}
               depth={depth + 1}
               compact={compact}
             />

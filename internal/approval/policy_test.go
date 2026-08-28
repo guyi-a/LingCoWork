@@ -53,7 +53,7 @@ func TestPolicyMatrix(t *testing.T) {
 			wantDefault: "allow", wantAuto: "allow", wantFull: "allow",
 		},
 		{
-			name:        "mkdir / create_workspace",
+			name:        "mkdir",
 			e:           effect.Effect{Kind: effect.KindFileStructure, Scope: effect.ScopeWorkspace},
 			wantDefault: "allow", wantAuto: "allow", wantFull: "allow",
 		},
@@ -85,11 +85,11 @@ func TestPolicyMatrix(t *testing.T) {
 			wantDefault: "ask", wantAuto: "allow", wantFull: "allow",
 		},
 		{
-			name: "workspace write to a sensitive path",
+			name: "dotenv workspace write follows ordinary write policy",
 			e: effect.Effect{
 				Kind: effect.KindFileWrite, Scope: effect.ScopeWorkspace, Path: "/ws/.env",
 			},
-			wantDefault: "ask", wantAuto: "classifier", wantFull: "allow",
+			wantDefault: "ask", wantAuto: "allow", wantFull: "allow",
 		},
 		{
 			name:        "write outside the workspace",
@@ -201,12 +201,10 @@ func TestIsSafeAutoContentScanning(t *testing.T) {
 	if ok, why := IsSafeAuto(e, `{"path":"config.go","content":"AKIAIOSFODNN7EXAMPLE"}`); ok {
 		t.Errorf("a credential in content must not fast-path (%s)", why)
 	}
-	// edit_file carries its payload in new_string, which the old fast path
-	// never looked at.
-	if ok, why := IsSafeAuto(e, `{"path":"config.go","new_string":"-----BEGIN RSA PRIVATE KEY-----"}`); ok {
-		t.Errorf("a credential in new_string must not fast-path (%s)", why)
+	if ok, why := IsSafeAuto(e, `{"path":"config.go","patch":"@@\n-old\n+-----BEGIN OPENSSH PRIVATE KEY-----"}`); ok {
+		t.Errorf("a credential in patch content must not fast-path (%s)", why)
 	}
-	if ok, why := IsSafeAuto(e, `{"path":"config.go","new_content":"ghp_abcdefghijklmnopqrstuvwxyz"}`); ok {
-		t.Errorf("a credential in new_content must not fast-path (%s)", why)
+	if ok, why := IsSafeAuto(e, `{"path":"config.go","patch":"@@\n-----BEGIN RSA PRIVATE KEY-----\n+removed"}`); !ok {
+		t.Errorf("a credential only in removed patch content should not block a safe replacement (%s)", why)
 	}
 }

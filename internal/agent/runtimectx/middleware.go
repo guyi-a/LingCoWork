@@ -10,8 +10,7 @@ import (
 
 // WorkspaceMiddleware 每次 agent 运行开始时把 workspace 状态拼进 instruction。
 // 用 BeforeAgent hook（而非 BeforeModelRewriteState）：一次运行 = 一个用户 turn 的
-// 响应循环，运行开始时的 workspace 状态就够了；本 turn 中途 create_workspace 的
-// 场景 LLM 会看到 tool 返回，不必再重复注入。
+// 响应循环。工作区由用户在运行开始前选择，本轮内不会由 Agent 改变。
 //
 // 嵌入 *BaseChatModelAgentMiddleware 以复用其他 hook 的 no-op 默认实现；只重写
 // BeforeAgent 一个方法。

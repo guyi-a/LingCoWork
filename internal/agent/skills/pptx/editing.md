@@ -64,7 +64,7 @@ uv run <scripts_path>/office/unpack.py template.pptx unpacked/
 
 一张一张改 `ppt/slides/slide{N}.xml`。
 
-**用 edit_file / write_file 工具直接改字符串，别写 Python 脚本去操作 XML**——脚本引入复杂度，Edit 工具的字符串替换清楚明白，回溯也方便。
+**用 apply_patch / write_file 工具直接改字符串，别写 Python 脚本去操作 XML**——脚本引入复杂度，Patch 的上下文修改清楚明白，回溯也方便。
 
 **改每张 slide 的流程**：
 

@@ -74,6 +74,9 @@ Quote any verbatim user instruction that controls the next steps.
 - **File paths** (absolute) that future turns are likely to revisit.
 - Function names, short code fragments (include snippets verbatim if they
   are the working contract), API endpoints, versions, ports.
+- Conclusions already drawn from user-attached images. The summarizer does
+  not receive image pixels, so preserve only visual facts stated in the
+  conversation and note the attachment path; never infer unseen details.
 - Errors with their root cause and fix.
 
 ## 5. Handoff

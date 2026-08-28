@@ -6,6 +6,7 @@
  *
  * IPC surface (kept intentionally tiny — see preload):
  *   'pick-files'         → PickedLocalFile[]  (native file/folder picker)
+ *   'pick-directory'     → string | null      (project workspace picker)
  *   'save-pasted-image'  → { path, name }     (persist pasted/dropped image
  *                                              bytes to a scratch dir so the
  *                                              backend can read from disk on
@@ -116,6 +117,14 @@ function extFromMime(mime: string): string {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('pick-directory', async (): Promise<string | null> => {
+    const res = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    return res.filePaths[0] ?? null;
+  });
+
   ipcMain.handle('pick-files', async (): Promise<PickedLocalFile[]> => {
     const res = await dialog.showOpenDialog({
       properties: ['openFile', 'openDirectory', 'multiSelections'],

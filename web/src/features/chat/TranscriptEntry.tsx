@@ -10,6 +10,12 @@ import { MessageBody } from "./MessageBody";
 import { UserAttachmentChips } from "./UserAttachmentChips";
 import { parseAttachmentMarkers } from "@/features/chat/attachments-store";
 import { InstructionIcon } from "./InstructionPicker";
+import {
+  CodingToolDetails,
+  CodingToolLabel,
+  codingToolLabel,
+  isCodingTool,
+} from "./CodingToolDetails";
 
 function CopyIcon() {
   return (
@@ -646,7 +652,8 @@ function ToolEntry({
   const hasResult = Boolean(tool.content || tool.error);
   const hasSubEvents = Boolean(subEvents && subEvents.length > 0);
   const expandable = hasArgs || hasResult || hasSubEvents;
-  const argLabel = toolArgLabel(argsParsed);
+  const specialized = isCodingTool(tool.name);
+  const argLabel = specialized ? codingToolLabel(tool) : toolArgLabel(argsParsed);
   const isAgent = AGENT_TOOL_NAMES.has(tool.name);
 
   const { dot, label, labelClass } = statusBits(tool.status);
@@ -672,10 +679,14 @@ function ToolEntry({
         <span className="text-ink">{tool.name || "(unnamed)"}</span>
         {argLabel && (
           <span
-            className="min-w-0 truncate text-muted normal-case tracking-normal"
+            className="flex min-w-0 items-baseline gap-1 truncate text-muted normal-case tracking-normal"
             title={argLabel}
           >
-            <span className="text-ink/70">{argLabel}</span>
+            {specialized ? (
+              <CodingToolLabel tool={tool} />
+            ) : (
+              <span className="text-ink/70">{argLabel}</span>
+            )}
           </span>
         )}
         <span
@@ -694,7 +705,10 @@ function ToolEntry({
           {hasSubEvents && subEvents && (
             <SubAgentTimeline events={subEvents} />
           )}
-          {!hasSubEvents && hasArgs && (
+          {!hasSubEvents && specialized && (
+            <CodingToolDetails tool={tool} />
+          )}
+          {!hasSubEvents && !specialized && hasArgs && (
             <div>
               <div className="text-[9px] tracking-[0.2em] uppercase text-muted mb-1">
                 Args
@@ -704,7 +718,7 @@ function ToolEntry({
               </pre>
             </div>
           )}
-          {!hasSubEvents && tool.content && (
+          {!hasSubEvents && !specialized && tool.content && (
             <div>
               <div className="text-[9px] tracking-[0.2em] uppercase text-muted mb-1">
                 Result

@@ -22,6 +22,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
 	"github.com/guyi-a/Interview-Agent/internal/agent/tools"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
+	"github.com/guyi-a/Interview-Agent/internal/changes"
 	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/config"
 	"github.com/guyi-a/Interview-Agent/internal/handler"
@@ -40,7 +41,6 @@ import (
 
 const (
 	dbPath          = "data/interview.db"
-	workspaceRoot   = ".workspace"
 	instructionRoot = ".lingcowork/instructions"
 	// 用户级长期记忆。项目级的那份在工作区根下，路径由 memory.ProjectPath 算。
 	userMemoryPath   = ".lingcowork/memory.md"
@@ -104,8 +104,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config.Load: %v", err)
 	}
-	log.Printf("LLM cfg: model=%s base=%s thinking=%v effort=%s",
-		cfg.LLM.Model, cfg.LLM.BaseURL, cfg.LLM.EnableThinking, cfg.LLM.ReasoningEffort)
+	log.Printf("LLM cfg: model=%s base=%s multimodal=%v thinking=%v effort=%s",
+		cfg.LLM.Model, cfg.LLM.BaseURL, cfg.LLM.Multimodal,
+		cfg.LLM.EnableThinking, cfg.LLM.ReasoningEffort)
 
 	ctx := context.Background()
 
@@ -120,6 +121,7 @@ func main() {
 	}
 	convRepo := repository.NewConversationRepo(db)
 	msgRepo := repository.NewMessageRepo(db)
+	workspaceChangeRepo := repository.NewWorkspaceChangeRepo(db)
 	projectRepo := repository.NewProjectRepo(db)
 	checkpointRepo := repository.NewCheckpointRepo(db)
 	pendingApprovalRepo := repository.NewPendingApprovalRepo(db)
@@ -144,14 +146,6 @@ func main() {
 		log.Printf("approval classifier disabled (missing DEEPSEEK_API_KEY or fast-model config); auto mode falls back to fast-path rules only")
 	} else {
 		log.Printf("approval classifier enabled: model=%s timeout=%ds", cfg.ApprovalFast.Model, cfg.ApprovalFast.TimeoutSeconds)
-	}
-
-	absWorkspaceRoot, err := filepath.Abs(workspaceRoot)
-	if err != nil {
-		log.Fatalf("resolve workspace root: %v", err)
-	}
-	if err := os.MkdirAll(absWorkspaceRoot, 0o755); err != nil {
-		log.Fatalf("mkdir workspace root: %v", err)
 	}
 
 	cm, err := llm.NewChatModel(ctx, cfg.LLM)
@@ -196,7 +190,6 @@ func main() {
 	memoryRegistry := memory.NewRegistry()
 
 	ts, effects, err := tools.Builtin(ctx, tools.Deps{
-		WorkspaceRoot:    absWorkspaceRoot,
 		ProjectRepo:      projectRepo,
 		ConversationRepo: convRepo,
 		BrowserUseMgr:    browserMgr,
@@ -229,7 +222,14 @@ func main() {
 	mcpMgr.Connect(ctx)
 	defer mcpMgr.Close()
 
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath)
+	changeTracker := changes.NewTracker(
+		workspaceChangeRepo,
+		msgRepo,
+		convRepo,
+		projectRepo,
+		effects,
+	)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -245,15 +245,20 @@ func main() {
 	}
 	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, instructionStore, pendingApprovals, approvalModes, cfg.LLM.Multimodal, compactor)
 	convService := service.NewConversationService(convRepo, msgRepo, compactionRepo, manager, browserMgr)
-	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr, absWorkspaceRoot)
+	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr)
 	workspaceService := service.NewWorkspaceService(convRepo, projectRepo)
+	workspaceDiffService := service.NewWorkspaceDiffService(
+		workspaceService,
+		msgRepo,
+		workspaceChangeRepo,
+	)
 	memoryService := service.NewMemoryService(memoryRegistry, userMemoryPath, workspaceService)
 
 	chatHandler := handler.NewChatHandler(chatService)
 	approvalHandler := handler.NewApprovalHandler(chatService)
 	convHandler := handler.NewConversationHandler(convService, contextLimit)
 	projectHandler := handler.NewProjectHandler(projectService)
-	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
+	workspaceHandler := handler.NewWorkspaceHandler(workspaceService, workspaceDiffService)
 	mcpHandler := handler.NewMCPHandler(mcpMgr)
 	skillHubHandler := handler.NewSkillHubHandler(skillHubSvc, skillHubCats)
 	instructionHandler := handler.NewInstructionHandler(instructionStore)

@@ -75,9 +75,7 @@ func NeedsApproval(e effect.Effect) bool {
 	case effect.KindDelegate:
 		return false
 
-	// Creating a directory writes no content and destroys nothing. mkdir and
-	// create_workspace live here so the bootstrap of a new conversation
-	// doesn't open with an approval card.
+	// Creating a directory writes no content and destroys nothing.
 	case effect.KindFileStructure:
 		return false
 
@@ -172,19 +170,28 @@ func IsSafeAuto(e effect.Effect, argsJSON string) (bool, string) {
 }
 
 // writtenContent gathers every argument field that can carry a payload into
-// a file. Checking all of them rather than write_file's `content` alone
-// closes the gap where a credential arrives as edit_file's replacement text.
+// a file, including the added lines carried by apply_patch.
 func writtenContent(argsJSON string) string {
 	if strings.TrimSpace(argsJSON) == "" {
 		return ""
 	}
 	var probe struct {
-		Content    string `json:"content"`
-		NewString  string `json:"new_string"`
-		NewContent string `json:"new_content"`
+		Content string `json:"content"`
+		Patch   string `json:"patch"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil {
 		return ""
 	}
-	return probe.Content + "\n" + probe.NewString + "\n" + probe.NewContent
+	return probe.Content + "\n" + patchAddedContent(probe.Patch)
+}
+
+func patchAddedContent(patch string) string {
+	var added strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, "+") {
+			added.WriteString(line[1:])
+			added.WriteByte('\n')
+		}
+	}
+	return added.String()
 }

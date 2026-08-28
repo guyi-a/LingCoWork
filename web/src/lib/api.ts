@@ -286,6 +286,24 @@ export async function listProjects(): Promise<ProjectItem[]> {
   return data.projects ?? [];
 }
 
+export async function openProject(
+  path: string,
+  name?: string,
+): Promise<{ project: ProjectItem; created: boolean }> {
+  const res = await fetch(`${API_BASE}/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, ...(name ? { name } : {}) }),
+  });
+  const data = (await res.json().catch(() => null)) as
+    | { project?: ProjectItem; created?: boolean; error?: string }
+    | null;
+  if (!res.ok || !data?.project) {
+    throw new Error(data?.error || `openProject: ${res.status}`);
+  }
+  return { project: data.project, created: data.created === true };
+}
+
 export async function renameProject(id: string, name: string): Promise<void> {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -786,6 +804,37 @@ export type WorkspaceFile = {
   truncated?: boolean;
 };
 
+export type WorkspaceChangeScope = "agent" | "all";
+
+export type WorkspaceChangedFile = {
+  path: string;
+  old_path?: string;
+  status: "modified" | "added" | "deleted" | "renamed";
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+  sensitive?: boolean;
+  too_large?: boolean;
+  attribution?: string;
+  tools?: string[];
+};
+
+export type WorkspaceChanges = {
+  workspace: WorkspaceMeta;
+  scope: WorkspaceChangeScope;
+  git_repository: boolean;
+  user_message_seq?: number;
+  files: WorkspaceChangedFile[];
+  truncated?: boolean;
+};
+
+export type WorkspaceDiff = WorkspaceChangedFile & {
+  scope: WorkspaceChangeScope;
+  user_message_seq?: number;
+  patch?: string;
+  truncated?: boolean;
+};
+
 export async function fetchWorkspaceTree(
   conversationId: string,
   opts?: { projectId?: string },
@@ -818,22 +867,57 @@ export async function fetchWorkspaceFile(
   return res.json();
 }
 
+export async function fetchWorkspaceChanges(
+  conversationId: string,
+  scope: WorkspaceChangeScope,
+  opts?: { projectId?: string },
+  signal?: AbortSignal,
+): Promise<WorkspaceChanges> {
+  const params = new URLSearchParams({ scope });
+  if (opts?.projectId) params.set("project_id", opts.projectId);
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/changes?${params.toString()}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`fetchWorkspaceChanges: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWorkspaceDiff(
+  conversationId: string,
+  path: string,
+  scope: WorkspaceChangeScope,
+  opts?: { projectId?: string },
+  signal?: AbortSignal,
+): Promise<WorkspaceDiff> {
+  const params = new URLSearchParams({ path, scope });
+  if (opts?.projectId) params.set("project_id", opts.projectId);
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/diff?${params.toString()}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`fetchWorkspaceDiff: ${res.status}`);
+  return res.json();
+}
+
 export function workspaceDownloadURL(
   conversationId: string,
   path: string,
-  opts?: { projectId?: string },
+  opts?: { projectId?: string; version?: number },
 ): string {
   const params = new URLSearchParams({ path });
   if (opts?.projectId) params.set("project_id", opts.projectId);
+  if (opts?.version !== undefined) params.set("v", String(opts.version));
   return `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/download?${params.toString()}`;
 }
 
 export function workspaceInlineURL(
   conversationId: string,
   path: string,
-  opts?: { projectId?: string },
+  opts?: { projectId?: string; version?: number },
 ): string {
   const params = new URLSearchParams({ path });
   if (opts?.projectId) params.set("project_id", opts.projectId);
+  if (opts?.version !== undefined) params.set("v", String(opts.version));
   return `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/inline?${params.toString()}`;
 }

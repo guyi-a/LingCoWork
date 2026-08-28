@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -20,6 +21,12 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
+)
+
+var (
+	ErrWorkspaceRequired = errors.New("a workspace project is required")
+	ErrProjectNotFound   = errors.New("workspace project not found")
+	ErrProjectMismatch   = errors.New("conversation is already bound to another project")
 )
 
 type ChatService struct {
@@ -119,8 +126,8 @@ func (s *ChatService) prepareUserMessage(userMsg, instructionName string) (prepa
 }
 
 // Start begins (or continues) a chat turn:
-//   - ensures conversation row exists
-//   - if projectID is provided AND the conversation is new (or unbound), binds it
+//   - requires a valid project before creating a conversation
+//   - binds new or legacy-unbound conversations to that project
 //   - loads prior messages as context
 //   - persists the new user message
 //   - kicks off the ADK Runner in a goroutine, persists assistant reply when done
@@ -130,21 +137,38 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, p
 		return nil, err
 	}
 
+	conv, err := s.convRepo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	boundProjectID := ""
+	if conv != nil && conv.ProjectID != nil {
+		boundProjectID = *conv.ProjectID
+	}
+	if boundProjectID == "" {
+		boundProjectID = strings.TrimSpace(projectID)
+		if boundProjectID == "" {
+			return nil, ErrWorkspaceRequired
+		}
+	} else if projectID != "" && projectID != boundProjectID {
+		return nil, ErrProjectMismatch
+	}
+
+	project, err := s.projectRepo.Get(ctx, boundProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if project == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, boundProjectID)
+	}
+
 	if err := s.convRepo.Upsert(ctx, id); err != nil {
 		return nil, err
 	}
 
-	if projectID != "" {
-		conv, err := s.convRepo.Get(ctx, id)
-		if err != nil {
+	if conv == nil || conv.ProjectID == nil || *conv.ProjectID == "" {
+		if err := s.convRepo.SetProjectID(ctx, id, boundProjectID); err != nil {
 			return nil, err
-		}
-		// Only bind when conversation has no project yet — silently ignore the
-		// query param if it's already bound to a different (or same) project.
-		if conv != nil && (conv.ProjectID == nil || *conv.ProjectID == "") {
-			if err := s.convRepo.SetProjectID(ctx, id, projectID); err != nil {
-				return nil, err
-			}
 		}
 	}
 
@@ -198,11 +222,17 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, p
 			active = s.compactor.Active(runCtx, id)
 		}
 
-		history := toSchemaMessages(id, prior, s.multimodal, active)
+		imageBudget := multimodal.NewImageBudget()
+		currentUserMessage := multimodal.BuildUserMessageWithBudget(
+			prepared.content,
+			s.multimodal,
+			imageBudget,
+		)
+		history := toSchemaMessagesWithBudget(id, prior, s.multimodal, active, imageBudget)
 		if workspaceCtx != "" {
 			history = append([]*schema.Message{schema.SystemMessage(workspaceCtx)}, history...)
 		}
-		history = append(history, multimodal.BuildUserMessage(prepared.content, s.multimodal))
+		history = append(history, currentUserMessage)
 
 		s.runAgent(runCtx, id, history, buf)
 	}()
@@ -298,13 +328,13 @@ func (s *ChatService) workspaceContext(ctx context.Context, convID string) strin
 	}
 	conv, err := s.convRepo.Get(ctx, convID)
 	if err != nil || conv == nil || conv.ProjectID == nil || *conv.ProjectID == "" {
-		return "当前会话未绑定工作区。用户要求读写文件时，先调用 create_workspace 创建工作区。"
+		return "当前会话未绑定工作区。请用户先在 LingCoWork 中选择一个文件夹；不要自行创建或猜测路径。"
 	}
 	project, err := s.projectRepo.Get(ctx, *conv.ProjectID)
 	if err != nil || project == nil {
 		return "当前会话绑定的工作区记录不存在。用户要求读写文件时，先说明工作区不可用。"
 	}
-	return "当前会话已绑定工作区。project_id=" + project.ID + "，project_name=" + project.Name + "，workspace=" + project.Workspace + "。用户询问当前项目/工作区/文件时，直接调用 list_files/read_file/write_file/edit_file/mkdir 等文件工具，不要先询问是否已挂载工作区。"
+	return "当前会话已绑定工作区。project_id=" + project.ID + "，project_name=" + project.Name + "，workspace=" + project.Workspace + "。用户询问当前项目/工作区/文件时，直接调用 glob/grep/list_files/read_file/apply_patch/write_file/mkdir 等文件工具，不要先询问是否已挂载工作区。"
 }
 
 func (s *ChatService) runAgent(ctx context.Context, convID string, msgs []*schema.Message, buf *stream.StreamBuffer) {
@@ -658,6 +688,22 @@ func padMissingToolResults(t stream.TurnRecord) stream.TurnRecord {
 // whose tool results were folded away is correctly seen as orphaned and
 // stripped, rather than replayed against results the model can't see.
 func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled bool, active *model.Compaction) []*schema.Message {
+	return toSchemaMessagesWithBudget(
+		convID,
+		rows,
+		multimodalEnabled,
+		active,
+		multimodal.NewImageBudget(),
+	)
+}
+
+func toSchemaMessagesWithBudget(
+	convID string,
+	rows []model.Message,
+	multimodalEnabled bool,
+	active *model.Compaction,
+	imageBudget *multimodal.ImageBudget,
+) []*schema.Message {
 	rows = compaction.ActiveRows(rows, active)
 
 	// Pass 1: collect all tool_call_ids we actually have tool_result rows for.
@@ -672,14 +718,27 @@ func toSchemaMessages(convID string, rows []model.Message, multimodalEnabled boo
 	if summary := compaction.SummaryMessage(active); summary != "" {
 		out = append(out, schema.UserMessage(summary))
 	}
-	for _, r := range rows {
+	// Reserve the shared budget for recent history first. Start builds the
+	// current user message before entering this function, so fresh attachments
+	// always have priority over replayed images.
+	builtUsers := make(map[int]*schema.Message)
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Role == string(schema.User) {
+			builtUsers[i] = multimodal.BuildUserMessageWithBudget(
+				rows[i].Content,
+				multimodalEnabled,
+				imageBudget,
+			)
+		}
+	}
+	for i, r := range rows {
 		// User rows may carry [image: /abs/path] markers that need to be
 		// expanded into multipart image blocks for the model. Delegate to
 		// the same helper Start uses so the wire shape is identical
 		// whether a message is being sent for the first time or replayed
 		// from history.
 		if r.Role == string(schema.User) {
-			m := multimodal.BuildUserMessage(r.Content, multimodalEnabled)
+			m := builtUsers[i]
 			// preserve reasoning if any (rare for user rows but harmless)
 			if r.ReasoningContent != "" {
 				m.ReasoningContent = r.ReasoningContent

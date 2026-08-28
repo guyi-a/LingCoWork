@@ -12,17 +12,14 @@ export function ProjectMenu({
   project,
   open,
   onOpenChange,
-  onNewConversation,
   onRename,
-  onDelete,
+  onCloseProject,
 }: {
   project: ProjectItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  conversationCount: number;
-  onNewConversation: () => void;
   onRename: () => void;
-  onDelete: () => void;
+  onCloseProject: () => void;
 }) {
   const openInFinder = useProjectStore((s) => s.openInFinder);
 
@@ -39,15 +36,6 @@ export function ProjectMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          onSelect={(e) => {
-            e.preventDefault();
-            onNewConversation();
-          }}
-        >
-          <span className="font-mono text-[10px] text-muted">+</span>
-          新对话
-        </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={(e) => {
             e.preventDefault();
@@ -71,11 +59,11 @@ export function ProjectMenu({
           destructive
           onSelect={(e) => {
             e.preventDefault();
-            onDelete();
+            onCloseProject();
           }}
         >
           <span className="font-mono text-[10px]">✕</span>
-          删除项目
+          关闭项目
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

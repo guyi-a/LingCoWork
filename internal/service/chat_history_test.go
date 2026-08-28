@@ -1,10 +1,15 @@
 package service
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/guyi-a/Interview-Agent/internal/agent/multimodal"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 )
 
@@ -104,6 +109,40 @@ func TestToSchemaMessages_ReplaysExpandedInstructionSnapshot(t *testing.T) {
 	}
 	if out[0].Content != rows[0].Content {
 		t.Fatalf("replay content=%q want expanded snapshot %q", out[0].Content, rows[0].Content)
+	}
+}
+
+func TestToSchemaMessages_ImageBudgetPrefersRecentHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	rows := make([]model.Message, multimodal.MaxImagesPerRequest+1)
+	for i := range rows {
+		rows[i] = model.Message{
+			Seq:     i + 1,
+			Role:    "user",
+			Content: fmt.Sprintf("[image: %s]\nturn %d", path, i),
+		}
+	}
+
+	out := toSchemaMessagesWithBudget(
+		"c1",
+		rows,
+		true,
+		nil,
+		multimodal.NewImageBudget(),
+	)
+	if len(out) != len(rows) {
+		t.Fatalf("len=%d want %d", len(out), len(rows))
+	}
+	if len(out[0].UserInputMultiContent) != 0 ||
+		!strings.Contains(out[0].Content, "request image count limit reached") {
+		t.Fatalf("oldest image was not omitted: %#v", out[0])
+	}
+	if len(out[len(out)-1].UserInputMultiContent) == 0 {
+		t.Fatal("newest image did not receive budget")
 	}
 }
 

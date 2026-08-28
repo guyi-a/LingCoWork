@@ -20,7 +20,7 @@ export function ProjectGroup({
   const [open, setOpen] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
   const navigate = useNavigate();
   const { id: activeId } = useParams();
   const refreshConvs = useConversationStore((s) => s.refresh);
@@ -31,14 +31,14 @@ export function ProjectGroup({
     navigate(`/c/${id}`, { state: { projectId: project.id } });
   };
 
-  const onConfirmDelete = async () => {
-    setDeleteOpen(false);
+  const onConfirmClose = async () => {
+    setCloseOpen(false);
     const warning = await removeProject(project.id).catch((e) => {
       console.error(e);
       return undefined;
     });
     if (warning) {
-      console.warn("project deleted with warning:", warning);
+      console.warn("project closed with warning:", warning);
     }
     await refreshConvs();
     // If the active conversation was inside this project, route home.
@@ -65,30 +65,24 @@ export function ProjectGroup({
             {project.name || project.id}
           </span>
         </button>
-        <span
-          className={cn(
-            "font-mono text-[10px] text-muted/60 shrink-0 tabular-nums",
-            menuOpen ? "hidden" : "group-hover/project:hidden",
-          )}
+        <button
+          type="button"
+          onClick={onNewConversation}
+          title={`在 ${project.name || project.id} 中新建对话`}
+          aria-label={`在 ${project.name || project.id} 中新建对话`}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-paper hover:text-ink"
         >
-          {conversations.length}
-        </span>
-        <span className="hidden size-6 shrink-0 group-hover/project:block" />
+          <PlusIcon />
+        </button>
         <div
-          className={cn(
-            "absolute right-2.5 flex h-7 items-center opacity-0 pointer-events-none",
-            "group-hover/project:opacity-100 group-hover/project:pointer-events-auto",
-            menuOpen && "opacity-100 pointer-events-auto",
-          )}
+          className="flex size-6 shrink-0 items-center justify-center"
         >
           <ProjectMenu
             project={project}
             open={menuOpen}
             onOpenChange={setMenuOpen}
-            conversationCount={conversations.length}
-            onNewConversation={onNewConversation}
             onRename={() => setRenameOpen(true)}
-            onDelete={() => setDeleteOpen(true)}
+            onCloseProject={() => setCloseOpen(true)}
           />
         </div>
       </div>
@@ -96,7 +90,15 @@ export function ProjectGroup({
       {open && (
         <ul className="py-0.5">
           {conversations.length === 0 ? (
-            <li className="px-2.5 py-1 text-[11px] text-muted/70">无会话</li>
+            <li className="pl-8 pr-2 py-0.5">
+              <button
+                type="button"
+                onClick={onNewConversation}
+                className="text-[11px] text-muted/70 transition-colors hover:text-ink"
+              >
+                + 开始对话
+              </button>
+            </li>
           ) : (
             conversations.map((c) => (
               <ConversationItem key={c.id} item={c} indent />
@@ -110,12 +112,12 @@ export function ProjectGroup({
         onOpenChange={setRenameOpen}
         project={project}
       />
-      <DeleteDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
+      <CloseProjectDialog
+        open={closeOpen}
+        onOpenChange={setCloseOpen}
         project={project}
         conversationCount={conversations.length}
-        onConfirm={onConfirmDelete}
+        onConfirm={onConfirmClose}
       />
     </div>
   );
@@ -160,6 +162,23 @@ function FolderIcon() {
       className="shrink-0 text-muted/90"
     >
       <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H6l1.5 1.5H12.5A1.5 1.5 0 0 1 14 6v6.5A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5V4.5Z" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path d="M8 3v10M3 8h10" />
     </svg>
   );
 }
@@ -211,7 +230,7 @@ function RenameDialog({
       <DialogContent aria-describedby="rename-desc">
         <DialogTitle>Rename project</DialogTitle>
         <DialogDescription id="rename-desc">
-          仅修改项目展示名，slug（{project.id}）和工作区路径不变。
+          仅修改项目展示名，项目 ID（{project.id}）和工作区路径不变。
         </DialogDescription>
         <input
           type="text"
@@ -247,9 +266,9 @@ function RenameDialog({
   );
 }
 
-// --- Delete confirm dialog ---
+// --- Close project confirm dialog ---
 
-function DeleteDialog({
+function CloseProjectDialog({
   open,
   onOpenChange,
   project,
@@ -275,13 +294,13 @@ function DeleteDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent aria-describedby="del-desc">
-        <DialogTitle>Delete project</DialogTitle>
-        <DialogDescription id="del-desc">
-          将永久删除项目「<span className="text-ink">{project.name || project.id}</span>」、
-          其下 {conversationCount} 段会话与全部消息，以及磁盘上的工作区目录
-          <span className="font-mono text-[11px] text-ink"> {project.workspace}</span>。
-          此操作不可撤销。
+      <DialogContent aria-describedby="close-project-desc">
+        <DialogTitle>关闭项目</DialogTitle>
+        <DialogDescription id="close-project-desc">
+          将从 LingCoWork 中移除项目「<span className="text-ink">{project.name || project.id}</span>」
+          及其下 {conversationCount} 段会话与全部消息。磁盘上的工作区目录
+          <span className="font-mono text-[11px] text-ink"> {project.workspace}</span>
+          {" "}不会被删除；之后仍可重新打开该文件夹。会话移除后不可恢复。
         </DialogDescription>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -297,7 +316,7 @@ function DeleteDialog({
             disabled={pending}
             className="px-3 py-1.5 text-[13px] bg-red-600 text-paper hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
-            {pending ? "删除中…" : "确认删除"}
+            {pending ? "关闭中…" : "确认关闭"}
           </button>
         </div>
       </DialogContent>

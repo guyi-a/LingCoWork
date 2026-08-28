@@ -79,10 +79,14 @@ func (r *ConversationRepo) ListByProject(ctx context.Context, projectID string) 
 	return out, err
 }
 
-// List returns conversations ordered by updated_at desc (sidebar order).
+// List returns project-bound conversations ordered by updated_at desc. Legacy
+// unbound rows are intentionally hidden: the product no longer has ad-hoc
+// conversations, and new rows cannot be created without a project.
 func (r *ConversationRepo) List(ctx context.Context, limit int) ([]model.Conversation, error) {
 	var out []model.Conversation
-	q := r.db.WithContext(ctx).Where("status = ?", "active").Order("updated_at DESC")
+	q := r.db.WithContext(ctx).
+		Where("status = ? AND project_id IS NOT NULL AND project_id <> ''", "active").
+		Order("updated_at DESC")
 	if limit > 0 {
 		q = q.Limit(limit)
 	}
@@ -98,6 +102,12 @@ func (r *ConversationRepo) Delete(ctx context.Context, id string) error {
 			return err
 		}
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.Compaction{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkspaceFileBaseline{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkspaceChangeEvent{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Conversation{}, "id = ?", id).Error

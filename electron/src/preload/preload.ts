@@ -28,6 +28,8 @@ const runtimeConfig = Object.freeze({
 contextBridge.exposeInMainWorld('electronAPI', {
   runtimeConfig,
 
+  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('pick-directory'),
+
   pickFiles: (): Promise<PickedLocalFile[]> => ipcRenderer.invoke('pick-files'),
 
   // Persist an in-memory image (paste / drag-drop) to disk so the backend

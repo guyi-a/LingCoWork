@@ -16,6 +16,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/skills"
 	"github.com/guyi-a/Interview-Agent/internal/agent/toolerr"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
+	"github.com/guyi-a/Interview-Agent/internal/changes"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
@@ -78,6 +79,7 @@ func NewInterviewADKAgent(
 	effects *effect.Registry,
 	memoryRegistry *memory.Registry,
 	userMemoryPath string,
+	changeTracker *changes.Tracker,
 ) (*ADKBundle, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("ToolCallingChatModel is nil")
@@ -107,6 +109,13 @@ func NewInterviewADKAgent(
 	// five call sites would leave the other four judging calls by the old
 	// rules, and the sub-agents are exactly where that would go unnoticed.
 	approvalMW := approval.Middleware(approvalModes, classifier, effects)
+	toolMiddlewares := []compose.ToolMiddleware{
+		approvalMW,
+		toolerr.Middleware(),
+	}
+	if changeTracker != nil {
+		toolMiddlewares = append(toolMiddlewares, changeTracker.Middleware())
+	}
 
 	// runtime middleware：每次 agent 运行开始时把当前 workspace 状态拼进 instruction。
 	// 所有 sub-agent 共用同一个实例（无状态），保证主 agent 和 sub-agent 看到的
@@ -142,10 +151,7 @@ func NewInterviewADKAgent(
 				// approval MUST come before toolerr — toolerr also passes
 				// interrupt errors through, but the correct order avoids
 				// relying on that safety net.
-				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approvalMW,
-					toolerr.Middleware(),
-				},
+				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
@@ -166,11 +172,8 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: baseTools,
-				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approvalMW,
-					toolerr.Middleware(),
-				},
+				Tools:               baseTools,
+				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
 		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
@@ -190,11 +193,8 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: baseTools,
-				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approvalMW,
-					toolerr.Middleware(),
-				},
+				Tools:               baseTools,
+				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
 		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
@@ -215,11 +215,8 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: baseTools,
-				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approvalMW,
-					toolerr.Middleware(),
-				},
+				Tools:               baseTools,
+				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
 		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
@@ -243,11 +240,8 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: supervisorTools,
-				ToolCallMiddlewares: []compose.ToolMiddleware{
-					approvalMW,
-					toolerr.Middleware(),
-				},
+				Tools:               supervisorTools,
+				ToolCallMiddlewares: toolMiddlewares,
 			},
 			// Bubble up sub-agent (deep_research) internal events to the
 			// Runner's iter so the UI can show real-time progress.

@@ -82,7 +82,13 @@ export function FileSwitcherOverlay({
         {!loading && !error && entries?.length === 0 && (
           <div className="p-2 text-[12px] text-muted">空工作区</div>
         )}
-        {tree.length > 0 && <WorkspaceTreeList nodes={tree} compact />}
+        {tree.length > 0 && (
+          <WorkspaceTreeList
+            nodes={tree}
+            treeKey={projectId ?? conversationId}
+            compact
+          />
+        )}
       </div>
     </div>
   );

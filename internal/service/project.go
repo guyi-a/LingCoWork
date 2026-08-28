@@ -2,25 +2,32 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/guyi-a/Interview-Agent/internal/agent/browseruse"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 )
 
+var ErrInvalidWorkspace = errors.New("invalid workspace")
+
 type ProjectService struct {
-	repo          *repository.ProjectRepo
-	convRepo      *repository.ConversationRepo
-	manager       *stream.Manager
-	browserMgr    *browseruse.Manager
-	workspaceRoot string
+	repo       *repository.ProjectRepo
+	convRepo   *repository.ConversationRepo
+	manager    *stream.Manager
+	browserMgr *browseruse.Manager
+
+	openMu sync.Mutex
 }
 
 func NewProjectService(
@@ -28,14 +35,12 @@ func NewProjectService(
 	convRepo *repository.ConversationRepo,
 	manager *stream.Manager,
 	browserMgr *browseruse.Manager,
-	workspaceRoot string,
 ) *ProjectService {
 	return &ProjectService{
-		repo:          repo,
-		convRepo:      convRepo,
-		manager:       manager,
-		browserMgr:    browserMgr,
-		workspaceRoot: workspaceRoot,
+		repo:       repo,
+		convRepo:   convRepo,
+		manager:    manager,
+		browserMgr: browserMgr,
 	}
 }
 
@@ -55,9 +60,108 @@ func (s *ProjectService) Rename(ctx context.Context, id, name string) error {
 	return s.repo.UpdateName(ctx, id, name)
 }
 
-// Delete removes the project + cascades conversations/messages + removes the
-// workspace directory on disk. Streams under the project's conversations are
-// cancelled first.
+// OpenOrCreateFromPath registers a user-selected directory as a project.
+// The path stored in the database is canonical so reopening the same folder
+// reuses the existing project.
+func (s *ProjectService) OpenOrCreateFromPath(
+	ctx context.Context,
+	rawPath string,
+	name string,
+) (*model.Project, bool, error) {
+	workspace, err := canonicalWorkspaceDir(rawPath)
+	if err != nil {
+		return nil, false, err
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = filepath.Base(workspace)
+	}
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return nil, false, fmt.Errorf("%w: cannot derive project name from %q", ErrInvalidWorkspace, workspace)
+	}
+	if len(name) > 255 {
+		return nil, false, fmt.Errorf("%w: project name is longer than 255 characters", ErrInvalidWorkspace)
+	}
+
+	// The desktop app has one backend process. Serializing this short section
+	// prevents two simultaneous open-folder requests from creating duplicates
+	// without imposing a new unique index on existing databases.
+	s.openMu.Lock()
+	defer s.openMu.Unlock()
+
+	existing, err := s.repo.GetByWorkspace(ctx, workspace)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		now := time.Now()
+		if err := s.repo.Touch(ctx, existing.ID, now); err != nil {
+			return nil, false, err
+		}
+		existing.UpdatedAt = now
+		return existing, false, nil
+	}
+
+	// Older rows may contain an absolute but non-canonical spelling (for
+	// example, a path through a symlink). Preserve their IDs and reuse them.
+	projects, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range projects {
+		canonical, canonicalErr := canonicalWorkspaceDir(projects[i].Workspace)
+		if canonicalErr == nil && canonical == workspace {
+			now := time.Now()
+			if err := s.repo.Touch(ctx, projects[i].ID, now); err != nil {
+				return nil, false, err
+			}
+			projects[i].UpdatedAt = now
+			return &projects[i], false, nil
+		}
+	}
+
+	project := &model.Project{
+		ID:        uuid.NewString(),
+		Name:      name,
+		Workspace: workspace,
+	}
+	if err := s.repo.Create(ctx, project); err != nil {
+		return nil, false, err
+	}
+	return project, true, nil
+}
+
+func canonicalWorkspaceDir(rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", fmt.Errorf("%w: path is empty", ErrInvalidWorkspace)
+	}
+	if !filepath.IsAbs(rawPath) {
+		return "", fmt.Errorf("%w: path must be absolute", ErrInvalidWorkspace)
+	}
+
+	absolute, err := filepath.Abs(filepath.Clean(rawPath))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve absolute path: %v", ErrInvalidWorkspace, err)
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve path: %v", ErrInvalidWorkspace, err)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return "", fmt.Errorf("%w: inspect path: %v", ErrInvalidWorkspace, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: path is not a directory", ErrInvalidWorkspace)
+	}
+	return filepath.Clean(canonical), nil
+}
+
+// Delete removes the project and cascades conversations/messages. The
+// workspace is user-owned, so deleting an app record never removes files from
+// disk. Streams under the project's conversations are cancelled first.
 func (s *ProjectService) Delete(ctx context.Context, id string) error {
 	project, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -88,13 +192,6 @@ func (s *ProjectService) Delete(ctx context.Context, id string) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
-
-	// Filesystem cleanup. Safety: only delete if the dir is INSIDE workspaceRoot.
-	if err := safeRemoveAll(s.workspaceRoot, project.Workspace); err != nil {
-		// Don't fail the whole operation — DB is already gone. Log via returning
-		// a wrapped error so the handler can surface it as a warning.
-		return fmt.Errorf("project deleted, but workspace cleanup failed: %w", err)
-	}
 	return nil
 }
 
@@ -121,27 +218,4 @@ func (s *ProjectService) OpenInFinder(ctx context.Context, id string) error {
 		return fmt.Errorf("open is not supported on %s", runtime.GOOS)
 	}
 	return cmd.Start()
-}
-
-// safeRemoveAll removes dir, but only if it is strictly inside root.
-func safeRemoveAll(root, dir string) error {
-	if root == "" || dir == "" {
-		return fmt.Errorf("empty path")
-	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(absRoot, absDir)
-	if err != nil {
-		return err
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refusing to remove %q (outside workspace root %q)", absDir, absRoot)
-	}
-	return os.RemoveAll(absDir)
 }

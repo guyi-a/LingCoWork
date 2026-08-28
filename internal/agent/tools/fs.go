@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	maxReadBytes    = 256 * 1024  // 256 KiB
-	// maxWriteBytes 限制单次 write_file / edit_file 结果文件大小。
+	maxReadBytes = 256 * 1024 // 256 KiB
+	// maxWriteBytes limits one-shot whole-file writes.
 	// 收紧到 64 KiB 是为了避开上游 SSE 流式协议在超大 tool_call args 时的
 	// 序列化 bug（会产生半个 json.RawMessage，下一轮组装历史时炸）。
 	// 需要超过此限的场景用 write_file_chunked 分多次 append。
@@ -32,9 +32,8 @@ type fsDeps struct {
 	convRepo    *repository.ConversationRepo
 }
 
-// resolveWorkspace returns the absolute workspace path for the current
-// conversation, or a user-readable error if no workspace is mounted yet
-// (so the agent knows to call create_workspace first).
+// resolveWorkspace returns the user-selected workspace path for the current
+// conversation, or a user-readable error if no folder has been selected.
 func (d *fsDeps) resolveWorkspace(ctx context.Context) (string, error) {
 	return resolveConversationWorkspace(ctx, d.convRepo, d.projectRepo)
 }
@@ -198,9 +197,9 @@ type ReadFileOutput struct {
 	Content    string `json:"content"`
 	Offset     int64  `json:"offset"`
 	BytesRead  int    `json:"bytes_read"`
-	NextOffset int64  `json:"next_offset"`             // where to resume; equals size when eof
-	EOF        bool   `json:"eof"`                     // true if this read reached end of file
-	Truncated  bool   `json:"truncated,omitempty"`     // legacy alias: content ends before EOF because limit was hit
+	NextOffset int64  `json:"next_offset"`         // where to resume; equals size when eof
+	EOF        bool   `json:"eof"`                 // true if this read reached end of file
+	Truncated  bool   `json:"truncated,omitempty"` // legacy alias: content ends before EOF because limit was hit
 	SizeBytes  int64  `json:"size_bytes"`
 }
 
@@ -451,176 +450,7 @@ func newWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"write_file",
-		"Create or fully overwrite a UTF-8 text file inside the workspace. Missing parent directories are created. Prefer edit_file for partial changes; use this only when creating a new file or rewriting the whole content. **Size cap: 64 KiB per call** — files above this must be written via write_file_chunked in 小 chunks (each append ≤ 32 KiB, recommended ≤ 15 KiB to stay well below upstream streaming limits).",
-		fn,
-	)
-}
-
-// --- edit_file ---
-
-type EditFileInput struct {
-	Path       string `json:"path" jsonschema:"description=File path to edit. Relative to workspace root."`
-	OldString  string `json:"old_string" jsonschema:"description=Exact text to find. Must appear EXACTLY ONCE in the file when replace_all=false (otherwise the edit is rejected — add more surrounding context to make the match unique). When replace_all=true\\, may match multiple times."`
-	NewString  string `json:"new_string" jsonschema:"description=Replacement text. Use empty string to delete the matched region."`
-	ReplaceAll bool   `json:"replace_all" jsonschema:"description=If true\\, replace every occurrence of old_string. If false (default)\\, require old_string to appear exactly once."`
-}
-
-type EditFileOutput struct {
-	Path           string `json:"path"`
-	BytesBefore    int    `json:"bytes_before"`
-	BytesAfter     int    `json:"bytes_after"`
-	Replacements   int    `json:"replacements"`              // number of occurrences replaced
-	OccurrenceLine int    `json:"occurrence_line,omitempty"` // 1-based line of the first match (single-replace mode only)
-}
-
-func newEditFileTool(d *fsDeps) (tool.BaseTool, error) {
-	fn := func(ctx context.Context, in *EditFileInput) (*EditFileOutput, error) {
-		if in.Path == "" {
-			return nil, fmt.Errorf("path is required")
-		}
-		if in.OldString == "" {
-			return nil, fmt.Errorf("old_string is required (use write_file to create or fully replace a file)")
-		}
-		if in.OldString == in.NewString {
-			return nil, fmt.Errorf("old_string and new_string are identical; nothing to do")
-		}
-		ws, err := d.resolveWorkspace(ctx)
-		if err != nil {
-			return nil, err
-		}
-		abs, err := scope.Resolve(ws, in.Path)
-		if err != nil {
-			return nil, err
-		}
-		raw, err := os.ReadFile(abs)
-		if err != nil {
-			return nil, fmt.Errorf("read file: %w", err)
-		}
-		content := string(raw)
-		count := strings.Count(content, in.OldString)
-		if count == 0 {
-			return nil, fmt.Errorf("old_string not found in %q", in.Path)
-		}
-
-		var out string
-		var firstLine int
-		if in.ReplaceAll {
-			out = strings.ReplaceAll(content, in.OldString, in.NewString)
-		} else {
-			if count > 1 {
-				return nil, fmt.Errorf("old_string matches %d locations in %q; add more surrounding context to make it unique, or pass replace_all=true to change all", count, in.Path)
-			}
-			idx := strings.Index(content, in.OldString)
-			firstLine = 1 + strings.Count(content[:idx], "\n")
-			out = content[:idx] + in.NewString + content[idx+len(in.OldString):]
-		}
-		if len(out) > maxWriteBytes {
-			return nil, fmt.Errorf("resulting file too large: %d bytes (max %d)", len(out), maxWriteBytes)
-		}
-		if err := os.WriteFile(abs, []byte(out), 0o644); err != nil {
-			return nil, fmt.Errorf("write file: %w", err)
-		}
-		return &EditFileOutput{
-			Path:           abs,
-			BytesBefore:    len(raw),
-			BytesAfter:     len(out),
-			Replacements:   count,
-			OccurrenceLine: firstLine,
-		}, nil
-	}
-	return utils.InferTool(
-		"edit_file",
-		"Make an in-place edit by replacing exact text. In default mode (replace_all=false) old_string must appear EXACTLY ONCE — include enough surrounding context to make the match unique. Pass replace_all=true to replace every occurrence at once (returns the count). Use empty new_string to delete. Preferred over write_file for partial changes.",
-		fn,
-	)
-}
-
-// --- edit_file_lines ---
-
-type EditFileLinesInput struct {
-	Path       string `json:"path" jsonschema:"description=File path to edit. Relative to workspace root."`
-	StartLine  int    `json:"start_line" jsonschema:"description=1-based line number where the replacement begins (inclusive)."`
-	EndLine    int    `json:"end_line" jsonschema:"description=1-based line number where the replacement ends (inclusive). Must be >= start_line. To replace one line\\, set end_line = start_line."`
-	NewContent string `json:"new_content" jsonschema:"description=Text to put in place of lines [start_line\\, end_line]. Use empty string to delete the range. Interior newlines are preserved; a trailing newline is added automatically when needed to keep the file well-formed."`
-}
-
-type EditFileLinesOutput struct {
-	Path         string `json:"path"`
-	BytesBefore  int    `json:"bytes_before"`
-	BytesAfter   int    `json:"bytes_after"`
-	LinesRemoved int    `json:"lines_removed"`
-	StartLine    int    `json:"start_line"`
-	EndLine      int    `json:"end_line"`
-}
-
-func newEditFileLinesTool(d *fsDeps) (tool.BaseTool, error) {
-	fn := func(ctx context.Context, in *EditFileLinesInput) (*EditFileLinesOutput, error) {
-		if in.Path == "" {
-			return nil, fmt.Errorf("path is required")
-		}
-		if in.StartLine < 1 {
-			return nil, fmt.Errorf("start_line must be >= 1")
-		}
-		if in.EndLine < in.StartLine {
-			return nil, fmt.Errorf("end_line (%d) must be >= start_line (%d)", in.EndLine, in.StartLine)
-		}
-		ws, err := d.resolveWorkspace(ctx)
-		if err != nil {
-			return nil, err
-		}
-		abs, err := scope.Resolve(ws, in.Path)
-		if err != nil {
-			return nil, err
-		}
-		raw, err := os.ReadFile(abs)
-		if err != nil {
-			return nil, fmt.Errorf("read file: %w", err)
-		}
-		content := string(raw)
-		if content == "" {
-			return nil, fmt.Errorf("file %q is empty; use write_file instead", in.Path)
-		}
-		lines := strings.SplitAfter(content, "\n")
-		// Trailing empty element appears when content ends with "\n"; drop it
-		// so total == real line count.
-		if lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		total := len(lines)
-		if in.StartLine > total {
-			return nil, fmt.Errorf("start_line %d exceeds file line count %d", in.StartLine, total)
-		}
-		if in.EndLine > total {
-			return nil, fmt.Errorf("end_line %d exceeds file line count %d", in.EndLine, total)
-		}
-		before := strings.Join(lines[:in.StartLine-1], "")
-		after := strings.Join(lines[in.EndLine:], "")
-		nc := in.NewContent
-		// Keep file well-formed: if we still have content after the replaced
-		// range, ensure the injected block ends with a newline so `after`
-		// doesn't fuse onto its last line.
-		if nc != "" && len(after) > 0 && !strings.HasSuffix(nc, "\n") {
-			nc += "\n"
-		}
-		out := before + nc + after
-		if len(out) > maxWriteBytes {
-			return nil, fmt.Errorf("resulting file too large: %d bytes (max %d)", len(out), maxWriteBytes)
-		}
-		if err := os.WriteFile(abs, []byte(out), 0o644); err != nil {
-			return nil, fmt.Errorf("write file: %w", err)
-		}
-		return &EditFileLinesOutput{
-			Path:         abs,
-			BytesBefore:  len(raw),
-			BytesAfter:   len(out),
-			LinesRemoved: in.EndLine - in.StartLine + 1,
-			StartLine:    in.StartLine,
-			EndLine:      in.EndLine,
-		}, nil
-	}
-	return utils.InferTool(
-		"edit_file_lines",
-		"Replace a contiguous line range [start_line, end_line] (1-based, inclusive) with new_content. Use when you know the exact line numbers (e.g. from grep output or a previous read_file). Empty new_content deletes the range. To insert lines, first read_file to find an anchor and use edit_file with old_string set to that anchor — this tool does NOT do pure insertions.",
+		"Create or fully overwrite a UTF-8 text file inside the workspace. Missing parent directories are created. Prefer apply_patch for partial changes; use this only when creating a new file or rewriting the whole content. **Size cap: 64 KiB per call** — files above this must be written via write_file_chunked in small chunks (each append ≤ 32 KiB, recommended ≤ 15 KiB to stay well below upstream streaming limits).",
 		fn,
 	)
 }

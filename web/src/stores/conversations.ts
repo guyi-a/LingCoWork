@@ -8,6 +8,7 @@ import {
 interface ConversationStore {
   items: ConversationItem[];
   loading: boolean;
+  loaded: boolean;
   refresh: () => Promise<void>;
   remove: (id: string) => Promise<void>;
   touch: (id: string, title?: string, opts?: { projectId?: string }) => void;
@@ -16,15 +17,16 @@ interface ConversationStore {
 export const useConversationStore = create<ConversationStore>((set, get) => ({
   items: [],
   loading: false,
+  loaded: false,
 
   refresh: async () => {
     set({ loading: true });
     try {
       const items = await listConversations();
-      set({ items, loading: false });
+      set({ items, loading: false, loaded: true });
     } catch (err) {
       console.error("[conversations] refresh failed:", err);
-      set({ loading: false });
+      set({ loading: false, loaded: true });
     }
   },
 

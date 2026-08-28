@@ -13,7 +13,7 @@ import (
 )
 
 // 这个中间件是"手写记忆能被模型看到"的唯一通路。没有 conversation repo 的场景
-// （nil repo）走的是临时对话分支，正好是覆盖用户级注入的最小装置。
+// （nil repo）走的是未绑定工作区分支，正好是覆盖用户级注入的最小装置。
 func TestMemoryMiddlewareInjectsUserMemory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.md")
 	registry := memory.NewRegistry()

@@ -55,7 +55,7 @@ func TestSnippetNamesProjectPathWhenBound(t *testing.T) {
 	if strings.Contains(unbound, "写入 ") {
 		t.Errorf("unbound conversation should not point at a project file:\n%s", unbound)
 	}
-	if !strings.Contains(unbound, "先建工作区") {
+	if !strings.Contains(unbound, "用户选择工作区文件夹") {
 		t.Errorf("unbound conversation should explain why project memory is unavailable:\n%s", unbound)
 	}
 }

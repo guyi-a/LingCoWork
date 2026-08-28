@@ -7,8 +7,10 @@ import { cn } from "@/lib/utils";
 
 export function ConversationHeader({
   conversationId,
+  projectId,
 }: {
   conversationId: string;
+  projectId?: string;
 }) {
   const conversations = useConversationStore((s) => s.items);
   const projects = useProjectStore((s) => s.items);
@@ -16,37 +18,44 @@ export function ConversationHeader({
   const togglePanel = useWorkspaceStore((s) => s.togglePanel);
   const [memoryOpen, setMemoryOpen] = useState(false);
 
-  const { title, projectName, hasProject } = useMemo(() => {
+  const { title, projectName, workspace, hasProject } = useMemo(() => {
     const conv = conversations.find((c) => c.id === conversationId);
-    if (!conv) return { title: "", projectName: "", hasProject: false };
-    const project = conv.project_id
-      ? projects.find((p) => p.id === conv.project_id)
+    const effectiveProjectId = projectId ?? conv?.project_id ?? undefined;
+    const project = effectiveProjectId
+      ? projects.find((p) => p.id === effectiveProjectId)
       : null;
     return {
-      title: conv.title || "新建会话",
+      title: conv?.title || "新建会话",
       projectName: project?.name ?? "",
-      hasProject: !!conv.project_id,
+      workspace: project?.workspace ?? "",
+      hasProject: !!effectiveProjectId,
     };
-  }, [conversations, projects, conversationId]);
+  }, [conversations, projects, conversationId, projectId]);
 
   return (
     <header className="drag-region shrink-0 min-h-[50px] flex items-start gap-3 px-4 py-3 border-b border-rule bg-paper">
-      <div className="min-w-0 flex-1 flex items-baseline gap-2.5">
-        {projectName && (
-          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-muted shrink-0">
-            {projectName}
-          </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-2.5">
+          {projectName && (
+            <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-muted shrink-0">
+              {projectName}
+            </span>
+          )}
+          <h2
+            className="min-w-0 flex-1 text-[15px] leading-5 text-ink truncate"
+            title={title}
+          >
+            {title}
+          </h2>
+        </div>
+        {workspace && (
+          <p className="truncate font-mono text-[10px] leading-4 text-muted/70" title={workspace}>
+            {workspace}
+          </p>
         )}
-        <h2
-          className="min-w-0 flex-1 text-[15px] leading-6 text-ink truncate"
-          title={title}
-        >
-          {title}
-        </h2>
       </div>
 
-      {/* 只有绑了工作区才有项目记忆可编辑。临时对话下这个按钮不出现 ——
-          让它出现再报"没有工作区"是把一个已知答案做成一次点击。 */}
+      {/* 只有绑了工作区才有项目记忆可编辑。 */}
       {hasProject && (
         <button
           type="button"
@@ -79,7 +88,7 @@ export function ConversationHeader({
         )}
       >
         <PanelIcon open={panelOpen} />
-        <span>Files</span>
+        <span>Workspace</span>
       </button>
 
       <MemoryEditor

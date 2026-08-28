@@ -8,10 +8,9 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 )
 
-// resolveConversationWorkspace returns the absolute workspace path bound to
-// the current conversation, or an error whose message tells the agent to
-// call create_workspace first. Shared by fs and browser_use tools so both
-// exhibit the same "no workspace → self-heal via create_workspace" flow.
+// resolveConversationWorkspace returns the absolute workspace path selected
+// for the current conversation. Workspace selection is a user-facing UI
+// action; tools never create or silently choose directories.
 func resolveConversationWorkspace(
 	ctx context.Context,
 	convRepo *repository.ConversationRepo,
@@ -26,7 +25,7 @@ func resolveConversationWorkspace(
 		return "", fmt.Errorf("load conversation: %w", err)
 	}
 	if conv == nil || conv.ProjectID == nil || *conv.ProjectID == "" {
-		return "", fmt.Errorf("no workspace mounted for this conversation. Call create_workspace first")
+		return "", fmt.Errorf("no workspace selected for this conversation; ask the user to choose a folder in the app")
 	}
 	project, err := projectRepo.Get(ctx, *conv.ProjectID)
 	if err != nil {

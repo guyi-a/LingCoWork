@@ -16,6 +16,7 @@ interface Props {
   path: string;
   name: string;
   projectId?: string;
+  version?: number;
 }
 
 const SYMBOL_PUA_MAP: Record<number, string> = {
@@ -92,7 +93,13 @@ function fixSymbolChars(container: HTMLElement) {
   });
 }
 
-export function DocxPreview({ conversationId, path, name, projectId }: Props) {
+export function DocxPreview({
+  conversationId,
+  path,
+  name,
+  projectId,
+  version,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +112,10 @@ export function DocxPreview({ conversationId, path, name, projectId }: Props) {
 
     (async () => {
       try {
-        const url = workspaceInlineURL(conversationId, path, { projectId });
+        const url = workspaceInlineURL(conversationId, path, {
+          projectId,
+          version,
+        });
         const res = await fetch(url, { signal: ac.signal });
         if (!res.ok) {
           throw new Error(`${res.status} ${res.statusText}`);
@@ -138,7 +148,7 @@ export function DocxPreview({ conversationId, path, name, projectId }: Props) {
     })();
 
     return () => ac.abort();
-  }, [conversationId, path, projectId]);
+  }, [conversationId, path, projectId, version]);
 
   if (error) {
     return (

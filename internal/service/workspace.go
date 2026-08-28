@@ -25,7 +25,7 @@ var (
 )
 
 const (
-	maxTreeEntries = 500
+	maxTreeEntries = 5000
 	maxFileBytes   = 512 * 1024
 	binarySniffLen = 512
 )
@@ -161,7 +161,9 @@ func (s *WorkspaceService) TreeFor(ctx context.Context, convID, projectID string
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
-			return nil
+			if name != ".env" && !strings.HasPrefix(name, ".env.") {
+				return nil
+			}
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
@@ -192,6 +194,9 @@ func (s *WorkspaceService) TreeFor(ctx context.Context, convID, projectID string
 			truncated = true
 			return filepath.SkipAll
 		}
+		if d.IsDir() && shouldPruneWorkspaceTreeDir(name) {
+			return filepath.SkipDir
+		}
 		return nil
 	})
 	if walkErr != nil {
@@ -206,6 +211,16 @@ func (s *WorkspaceService) TreeFor(ctx context.Context, convID, projectID string
 		Entries:   entries,
 		Truncated: truncated,
 	}, nil
+}
+
+func shouldPruneWorkspaceTreeDir(name string) bool {
+	switch name {
+	case "node_modules", "vendor", "dist", "build", "out", "target",
+		"coverage", "package-resources", "__pycache__":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *WorkspaceService) File(ctx context.Context, convID, userPath string) (*FileResult, error) {
@@ -234,7 +249,7 @@ func (s *WorkspaceService) FileFor(ctx context.Context, convID, projectID, userP
 		Name: filepath.Base(abs),
 		Size: info.Size(),
 		Mime: mime.TypeByExtension(ext),
-		Kind: classifyExt(ext),
+		Kind: classifyFileName(filepath.Base(abs)),
 	}
 
 	f, err := os.Open(abs)
@@ -291,6 +306,13 @@ func (s *WorkspaceService) OpenForDownloadFor(ctx context.Context, convID, proje
 		return "", "", ErrPathIsDirectory
 	}
 	return abs, filepath.Base(abs), nil
+}
+
+func classifyFileName(name string) FileKind {
+	if name == ".env" || strings.HasPrefix(name, ".env.") {
+		return KindText
+	}
+	return classifyExt(strings.ToLower(filepath.Ext(name)))
 }
 
 func classifyExt(ext string) FileKind {

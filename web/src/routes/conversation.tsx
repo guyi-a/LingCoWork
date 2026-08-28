@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation, useParams } from "react-router";
+import { Navigate, useLocation, useParams } from "react-router";
 import { useChatStream } from "@/hooks/useChatStream";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
@@ -58,11 +58,16 @@ export function Conversation() {
   const conversationProjectId = useConversationStore(
     (s) => s.items.find((item) => item.id === id)?.project_id ?? undefined,
   );
+  const conversationsLoaded = useConversationStore((s) => s.loaded);
   const projectId = state?.projectId ?? conversationProjectId ?? undefined;
 
   const touch = useConversationStore((s) => s.touch);
   const refreshConvs = useConversationStore((s) => s.refresh);
   const refreshProjects = useProjectStore((s) => s.refresh);
+
+  useEffect(() => {
+    if (!conversationsLoaded) void refreshConvs();
+  }, [conversationsLoaded, refreshConvs]);
 
   const attachments = useAttachmentsStore(
     (s) => s.pending[id] ?? EMPTY_ATTACHMENTS,
@@ -71,9 +76,7 @@ export function Conversation() {
   const clearAttachments = useAttachmentsStore((s) => s.clear);
 
   const onProjectBound = useCallback(() => {
-    // Conversation just got bound to a project — refresh both stores so
-    // the sidebar can immediately move this item from Ad-hoc to the new
-    // project group, mid-stream.
+    // Legacy replay compatibility: older streams may still carry this frame.
     refreshConvs();
     refreshProjects();
   }, [refreshConvs, refreshProjects]);
@@ -187,6 +190,7 @@ export function Conversation() {
   }, [id, setQueuePaused, cancel]);
 
   const onPickFiles = useCallback(async () => {
+    if (!electronAPI) return;
     try {
       const picked = await electronAPI.pickFiles();
       if (picked.length > 0) addAttachments(id, picked);
@@ -201,6 +205,7 @@ export function Conversation() {
   // as [image:] markers on send.
   const onImageFiles = useCallback(
     (files: File[]) => {
+      if (!electronAPI) return;
       void saveImageFiles(id, files, electronAPI.savePastedImage, addAttachments);
     },
     [id, addAttachments],
@@ -244,17 +249,18 @@ export function Conversation() {
   const pendingFiredRef = useRef(false);
   useEffect(() => {
     if (loading) return;
+    if (!projectId) return;
     if (pending === undefined && !pendingInstruction) return;
     if (pendingFiredRef.current) return;
     pendingFiredRef.current = true;
     window.history.replaceState({}, "");
     onSend(pending ?? "", pendingInstruction);
-  }, [loading, pending, pendingInstruction]);
+  }, [loading, pending, pendingInstruction, projectId]);
 
-  if (loading) {
+  if (loading || (!projectId && !conversationsLoaded)) {
     return (
       <>
-        <ConversationHeader conversationId={id} />
+        <ConversationHeader conversationId={id} projectId={projectId} />
         <div className="flex-1 flex items-center justify-center">
           <p className="text-sm text-muted">加载会话…</p>
         </div>
@@ -262,9 +268,13 @@ export function Conversation() {
     );
   }
 
+  if (!projectId) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <>
-      <ConversationHeader conversationId={id} />
+      <ConversationHeader conversationId={id} projectId={projectId} />
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col">
           <Transcript
@@ -284,9 +294,9 @@ export function Conversation() {
               onCancel={onCancel}
               hasAttachments={attachments.length > 0}
               topSlot={<AttachmentChips conversationID={id} />}
-              leftActions={<AttachButton onClick={onPickFiles} />}
+              leftActions={electronAPI ? <AttachButton onClick={onPickFiles} /> : undefined}
               rightActions={<ApprovalModeDropdown conversationID={id} />}
-              onImageFiles={onImageFiles}
+              onImageFiles={electronAPI ? onImageFiles : undefined}
             />
             <PendingInterruptDock
               conversationID={id}
@@ -296,7 +306,10 @@ export function Conversation() {
             />
           </div>
         </div>
-        <WorkspacePanel streaming={streaming} projectId={projectId} />
+        <WorkspacePanel
+          streaming={streaming}
+          projectId={projectId}
+        />
       </div>
     </>
   );

@@ -27,7 +27,11 @@ func TestTreeHidesOnlyTheProjectMemoryFile(t *testing.T) {
 	for _, rel := range []string{
 		memory.FileName,
 		"notes.md",
+		".env",
+		".env.local",
 		filepath.Join("reports", memory.FileName),
+		filepath.Join("playground", "poem.md"),
+		filepath.Join("node_modules", "package", "index.js"),
 	} {
 		abs := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -64,9 +68,24 @@ func TestTreeHidesOnlyTheProjectMemoryFile(t *testing.T) {
 	if got[memory.FileName] {
 		t.Errorf("%s at the workspace root should be hidden; entries: %v", memory.FileName, got)
 	}
-	for _, want := range []string{"notes.md", "reports/" + memory.FileName} {
+	for _, want := range []string{"notes.md", ".env", ".env.local", "reports/" + memory.FileName} {
 		if !got[want] {
 			t.Errorf("%s should stay visible; entries: %v", want, got)
 		}
+	}
+	for _, want := range []string{"playground", "playground/poem.md", "node_modules"} {
+		if !got[want] {
+			t.Errorf("%s should stay visible; entries: %v", want, got)
+		}
+	}
+	if got["node_modules/package"] || got["node_modules/package/index.js"] {
+		t.Errorf("dependency contents should be pruned; entries: %v", got)
+	}
+	file, err := NewWorkspaceService(convRepo, projectRepo).File(ctx, "conv", ".env.local")
+	if err != nil {
+		t.Fatalf("preview .env.local: %v", err)
+	}
+	if file.Kind != KindText || file.Content != "x" {
+		t.Fatalf("dotenv preview = %#v", file)
 	}
 }

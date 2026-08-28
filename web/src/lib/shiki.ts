@@ -116,6 +116,7 @@ function lineNumberTransformer(): ShikiTransformer {
   return {
     name: "line-numbers",
     line(node, line) {
+      node.properties["data-line"] = String(line);
       node.children.unshift({
         type: "element",
         tagName: "span",

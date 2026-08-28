@@ -1,9 +1,15 @@
 package compaction
 
 import (
+	"regexp"
+
 	"github.com/guyi-a/Interview-Agent/internal/config"
 	"github.com/guyi-a/Interview-Agent/internal/repository/model"
 )
+
+const estimatedImageTokens = 384
+
+var imageMarkerRE = regexp.MustCompile(`(?m)^\[image:\s*.+?\]\s*$`)
 
 // EstimateTokens approximates how much context the next turn would carry.
 //
@@ -57,8 +63,10 @@ func ActiveRows(rows []model.Message, active *model.Compaction) []model.Message 
 
 func roughTokens(rows []model.Message, charsPerToken int) int {
 	chars := 0
+	imageTokens := 0
 	for _, r := range rows {
 		chars += len(r.Content) + len(r.ReasoningContent) + len(r.ToolCalls)
+		imageTokens += len(imageMarkerRE.FindAllString(r.Content, -1)) * estimatedImageTokens
 	}
-	return chars / charsPerToken
+	return chars/charsPerToken + imageTokens
 }

@@ -12,9 +12,16 @@ interface Props {
   path: string;
   name: string;
   projectId?: string;
+  version?: number;
 }
 
-export function PptxPreview({ conversationId, path, name, projectId }: Props) {
+export function PptxPreview({
+  conversationId,
+  path,
+  name,
+  projectId,
+  version,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // PptxViewer 实例 —— 切换文件时要 destroy() 释放，否则上一个 viewer 的 DOM 还挂着
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,7 +42,10 @@ export function PptxPreview({ conversationId, path, name, projectId }: Props) {
 
     (async () => {
       try {
-        const url = workspaceInlineURL(conversationId, path, { projectId });
+        const url = workspaceInlineURL(conversationId, path, {
+          projectId,
+          version,
+        });
         const res = await fetch(url, { signal: ac.signal });
         if (!res.ok) {
           throw new Error(`${res.status} ${res.statusText}`);
@@ -77,7 +87,7 @@ export function PptxPreview({ conversationId, path, name, projectId }: Props) {
         viewerRef.current = null;
       }
     };
-  }, [conversationId, path, projectId]);
+  }, [conversationId, path, projectId, version]);
 
   if (error) {
     return (

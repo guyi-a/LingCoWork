@@ -63,6 +63,18 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 
 	buf, err := h.chat.Start(c.Request.Context(), id, req.Message, instructionName, c.Query("project_id"))
 	if err != nil {
+		if errors.Is(err, service.ErrWorkspaceRequired) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请先选择工作区文件夹"})
+			return
+		}
+		if errors.Is(err, service.ErrProjectNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, service.ErrProjectMismatch) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, instructions.ErrInvalid) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

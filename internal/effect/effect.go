@@ -28,9 +28,7 @@ const (
 	KindFileRead  Kind = "filesystem-read"
 	KindFileWrite Kind = "filesystem-write"
 	// KindFileStructure creates directories only: no content written, nothing
-	// overwritten. Split out from KindFileWrite so mkdir / create_workspace
-	// keep running unprompted — gating create_workspace in particular would
-	// stall the bootstrap of every new conversation.
+	// overwritten. Split out from KindFileWrite so mkdir can run unprompted.
 	KindFileStructure Kind = "filesystem-structure"
 	KindFileTransfer  Kind = "filesystem-transfer"
 	// KindMemoryWrite modifies long-term memory. Split out from KindFileWrite

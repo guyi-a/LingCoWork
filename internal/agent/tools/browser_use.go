@@ -275,7 +275,7 @@ func dispatchBrowserUse(
 }
 
 // resolveScreenshotPath enforces workspace scope for browser screenshots:
-//   - no workspace → return a self-heal hint asking for create_workspace
+//   - no workspace → ask the user to choose a workspace folder in the app
 //   - save_path empty → auto-name under screenshots/<timestamp>.png
 //   - save_path absolute → reject
 //   - save_path relative → resolve inside workspace, prevent escape via ..
@@ -287,7 +287,7 @@ func resolveScreenshotPath(
 ) (string, error) {
 	ws, err := resolveConversationWorkspace(ctx, convRepo, projectRepo)
 	if err != nil {
-		return "", fmt.Errorf("screenshot 需要工作区：%w。请先调 create_workspace 建一个", err)
+		return "", fmt.Errorf("screenshot 需要工作区：%w", err)
 	}
 
 	if savePath == "" {
@@ -352,4 +352,3 @@ func newBrowserUseInstallTool() (tool.BaseTool, error) {
 		}
 	})
 }
-

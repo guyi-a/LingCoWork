@@ -5,14 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
 
 type LLMConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey    string
+	BaseURL   string
+	Model     string
 	MaxTokens int
 	// EnableThinking toggles DeepSeek thinking mode via
 	// extra_body {"thinking":{"type":"enabled|disabled"}}.
@@ -22,9 +23,9 @@ type LLMConfig struct {
 	// on DeepSeek's side). Empty → "high" when thinking is on.
 	ReasoningEffort string
 	// Multimodal reports whether the main model accepts native image
-	// content blocks. Off by default — DeepSeek's OpenAI path is text-first;
-	// when off, multimodal.BuildUserMessage rewrites [image:] markers into
-	// [file:] so they flow through OCR instead.
+	// content blocks. Vision model names enable it by default; an explicit
+	// LLM_MULTIMODAL value wins. When off, multimodal.BuildUserMessage
+	// rewrites [image:] markers into [file:] so they flow through OCR.
 	Multimodal bool
 }
 
@@ -157,35 +158,36 @@ func Load() (*Config, error) {
 	if !getEnvBool("COMPACTION_ENABLED", true) {
 		compactionKey = ""
 	}
+	llmModel := getEnv("LLM_MODEL", "deepseek-v4-flash-vision-exp")
 
 	cfg := &Config{
 		LLM: LLMConfig{
 			APIKey:          llmKey,
 			BaseURL:         getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
-			Model:           getEnv("LLM_MODEL", "deepseek-v4-pro"),
-			MaxTokens:       getEnvInt("LLM_MAX_TOKENS", 8192),
+			Model:           llmModel,
+			MaxTokens:       getEnvInt("LLM_MAX_TOKENS", 32000),
 			EnableThinking:  getEnvBool("LLM_ENABLE_THINKING", true),
 			ReasoningEffort: getEnv("LLM_REASONING_EFFORT", "high"),
-			Multimodal:      getEnvBool("LLM_MULTIMODAL", false),
+			Multimodal:      getEnvBool("LLM_MULTIMODAL", isVisionModel(llmModel)),
 		},
 		ApprovalFast: ApprovalFastConfig{
 			APIKey:         deepseekKey,
 			BaseURL:        getEnv("APPROVAL_FAST_BASE_URL", "https://api.deepseek.com"),
-			Model:          getEnv("APPROVAL_FAST_MODEL", "deepseek-chat"),
+			Model:          getEnv("APPROVAL_FAST_MODEL", "deepseek-v4-flash"),
 			MaxTokens:      getEnvInt("APPROVAL_FAST_MAX_TOKENS", 512),
 			TimeoutSeconds: getEnvInt("APPROVAL_FAST_TIMEOUT", 15),
 		},
 		Compaction: CompactionConfig{
 			APIKey:         compactionKey,
 			BaseURL:        getEnv("COMPACTION_BASE_URL", "https://api.deepseek.com"),
-			Model:          getEnv("COMPACTION_MODEL", getEnv("LLM_MODEL", "deepseek-v4-pro")),
+			Model:          getEnv("COMPACTION_MODEL", "deepseek-v4-flash"),
 			MaxTokens:      getEnvInt("COMPACTION_MAX_TOKENS", 4096),
 			TimeoutSeconds: getEnvInt("COMPACTION_TIMEOUT", 120),
 
-			WindowNominalTokens:  getEnvInt("COMPACTION_WINDOW_TOKENS", 128000),
-			WindowUsableRatio:    getEnvFloat("COMPACTION_USABLE_RATIO", 0.85),
-			ReservedOutputTokens: getEnvInt("COMPACTION_RESERVED_OUTPUT", 8000),
-			BufferTokens:         getEnvInt("COMPACTION_BUFFER_TOKENS", 4000),
+			WindowNominalTokens:  getEnvInt("COMPACTION_WINDOW_TOKENS", 1000000),
+			WindowUsableRatio:    getEnvFloat("COMPACTION_USABLE_RATIO", 0.90),
+			ReservedOutputTokens: getEnvInt("COMPACTION_RESERVED_OUTPUT", 32000),
+			BufferTokens:         getEnvInt("COMPACTION_BUFFER_TOKENS", 20000),
 
 			KeepLastUserTurns: getEnvInt("COMPACTION_KEEP_LAST_TURNS", 0),
 			CharsPerToken:     getEnvInt("COMPACTION_CHARS_PER_TOKEN", 4),
@@ -223,6 +225,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("LLM_MODEL is required")
 	}
 	return cfg, nil
+}
+
+func isVisionModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "vision")
 }
 
 func loadDotenv() {

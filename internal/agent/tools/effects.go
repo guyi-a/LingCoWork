@@ -37,16 +37,16 @@ func registerEffects(reg *effect.Registry, d *fsDeps) {
 	// --- reads: may leave the workspace, so scope decides ---
 	reg.Register("read_file", d.readEffect("path"))
 	reg.Register("list_files", d.readEffect("path"))
+	reg.Register("glob", d.searchEffect())
+	reg.Register("grep", d.searchEffect())
 	reg.Register("file_info", d.readEffect("path"))
 	reg.Register("extract_document_text", d.readEffect("path"))
 
 	// --- writes: scope.Resolve fences these into the workspace ---
 	reg.Register("write_file", d.writeEffect("path"))
-	reg.Register("edit_file", d.writeEffect("path"))
-	reg.Register("edit_file_lines", d.writeEffect("path"))
+	reg.Register("apply_patch", d.writeEffect("path"))
 	reg.Register("mkdir", d.structureEffect("path"))
 	reg.Register("write_file_chunked", d.chunkedWriteEffect())
-	reg.Register("create_workspace", createWorkspaceEffect)
 
 	// --- destructive / transfer ---
 	reg.Register("rm", d.rmEffect())
@@ -102,9 +102,9 @@ func rememberEffect(_ context.Context, argsJSON string) (effect.Effect, error) {
 func BuiltinToolNames() []string {
 	return []string{
 		"get_current_time", "rag_search", "ask_user",
-		"read_file", "list_files", "file_info", "extract_document_text",
-		"write_file", "edit_file", "edit_file_lines", "mkdir",
-		"write_file_chunked", "create_workspace",
+		"read_file", "list_files", "glob", "grep", "file_info", "extract_document_text",
+		"write_file", "apply_patch", "mkdir",
+		"write_file_chunked",
 		"rm", "mv", "cp",
 		"run_command", "browser_use", "browser_bridge", "browser_use_install",
 		"web_search", "web_fetch", "load_skill", "remember",
@@ -185,7 +185,7 @@ func (d *fsDeps) writeTarget(ctx context.Context, path string) (string, effect.S
 // write, or an edit to the workspace's long-term memory.
 //
 // Recognising this by path is what keeps the memory gate honest. The model
-// reaches project-level memory through write_file / edit_file like any other
+// reaches project-level memory through write_file / apply_patch like any other
 // file, so a rule keyed on tool NAME would never see it — and IsSafeAuto waves
 // through any non-sensitive workspace write, which means auto mode would let
 // the agent rewrite the user's standing project conventions with no card shown
@@ -206,6 +206,26 @@ func (d *fsDeps) readEffect(field string) effect.Deriver {
 			return effect.Effect{}, err
 		}
 		abs, sc, note, _ := d.readTarget(ctx, stringField(args, field))
+		return effect.Effect{
+			Kind:  effect.KindFileRead,
+			Scope: sc,
+			Path:  abs,
+			Note:  note,
+		}, nil
+	}
+}
+
+func (d *fsDeps) searchEffect() effect.Deriver {
+	return func(ctx context.Context, argsJSON string) (effect.Effect, error) {
+		args, err := decodeArgs(argsJSON)
+		if err != nil {
+			return effect.Effect{}, err
+		}
+		path := stringField(args, "path")
+		if strings.TrimSpace(path) == "" {
+			path = "."
+		}
+		abs, sc, note, _ := d.readTarget(ctx, path)
 		return effect.Effect{
 			Kind:  effect.KindFileRead,
 			Scope: sc,
@@ -283,22 +303,6 @@ func (d *fsDeps) chunkedWriteEffect() effect.Deriver {
 	}
 }
 
-// createWorkspaceEffect describes the bootstrap call. It only ever creates a
-// fresh directory under the managed workspace root, and it is the call every
-// other filesystem tool is waiting on — prompting for it would put an
-// approval in front of the first useful thing a new conversation does.
-func createWorkspaceEffect(_ context.Context, argsJSON string) (effect.Effect, error) {
-	var in CreateWorkspaceInput
-	if err := unmarshalArgs(argsJSON, &in); err != nil {
-		return effect.Effect{}, err
-	}
-	return effect.Effect{
-		Kind:  effect.KindFileStructure,
-		Scope: effect.ScopeWorkspace,
-		Path:  in.Slug,
-	}, nil
-}
-
 // rmEffect marks a delete irreversible on the same terms as the shell wall:
 // a recursive remove, or one aimed at a well-known dangerous path. A plain
 // single-file delete stays ordinary, so full_access users don't get a prompt
@@ -309,9 +313,7 @@ func (d *fsDeps) rmEffect() effect.Deriver {
 		if err := unmarshalArgs(argsJSON, &in); err != nil {
 			return effect.Effect{}, err
 		}
-		// rm resolves through ResolveRead, so an absolute path reaches
-		// anywhere on the machine.
-		abs, sc, note, ws := d.readTarget(ctx, in.Path)
+		abs, sc, note, ws := d.writeTarget(ctx, in.Path)
 		// Check the raw argument as well as the resolved path: `~/x` and
 		// `$HOME/x` are dangerous in the form the agent wrote them, and
 		// resolution erases that.
@@ -329,11 +331,9 @@ func (d *fsDeps) rmEffect() effect.Deriver {
 	}
 }
 
-// transferEffect covers mv and cp. Both resolve each side independently
-// through ResolveRead, so either end can sit outside the workspace, and the
-// approval card needs to say WHICH end — `cp ./notes.md /tmp` and
-// `cp /tmp/data.csv ./` have opposite risk profiles and a single worst-case
-// scope collapses them into the same card.
+// transferEffect covers mv and cp. Destinations are always writes inside the
+// workspace. cp may read an external source; mv also mutates its source and
+// therefore requires that source to stay inside the workspace.
 func (d *fsDeps) transferEffect(deletesSource bool) effect.Deriver {
 	return func(ctx context.Context, argsJSON string) (effect.Effect, error) {
 		var in struct {
@@ -343,8 +343,14 @@ func (d *fsDeps) transferEffect(deletesSource bool) effect.Deriver {
 		if err := unmarshalArgs(argsJSON, &in); err != nil {
 			return effect.Effect{}, err
 		}
-		srcAbs, srcScope, srcNote, ws := d.readTarget(ctx, in.Src)
-		dstAbs, dstScope, dstNote, _ := d.readTarget(ctx, in.Dst)
+		var srcAbs, srcNote, ws string
+		var srcScope effect.Scope
+		if deletesSource {
+			srcAbs, srcScope, srcNote, ws = d.writeTarget(ctx, in.Src)
+		} else {
+			srcAbs, srcScope, srcNote, ws = d.readTarget(ctx, in.Src)
+		}
+		dstAbs, dstScope, dstNote, _ := d.writeTarget(ctx, in.Dst)
 		kind := effect.KindFileTransfer
 		// Overwriting memory.md by moving something onto it is a memory edit
 		// however it is spelled, so the destination decides the kind.

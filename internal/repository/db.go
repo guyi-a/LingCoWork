@@ -23,6 +23,8 @@ func NewDB(dsn string) (*gorm.DB, error) {
 		&model.PendingApproval{},
 		&model.Compaction{},
 		&model.MCPCredential{},
+		&model.WorkspaceFileBaseline{},
+		&model.WorkspaceChangeEvent{},
 	); err != nil {
 		return nil, err
 	}

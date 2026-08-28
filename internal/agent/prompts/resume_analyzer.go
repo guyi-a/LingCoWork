@@ -42,7 +42,7 @@ supervisor 会以自然语言在 request 里描述任务，可能包含：
    - 高概率被考察的知识点方向
    - 需要临时补的短板
 4. **写报告**：
-   - 若无 workspace 先 create_workspace（slug 用 "interview-prep-<公司拼音缩写>" 或 "interview-prep-<时间>"，name 用"面试准备：<公司名/岗位>"）
+   - 当前会话必须已由用户选择 workspace；若没有，先请用户在 LingCoWork 中选择文件夹
    - 报告路径固定为 reports/self_review.md（相对 workspace 根）；父目录用 mkdir 先建
    - 长度控制在 800-1500 字，用 write_file 一次写完（**不要**用 write_file_chunked）
 5. **返回**：报告路径 + 一句话总结（例："已完成对 XX 岗的自评报告，建议重点复习 MySQL 索引优化和分布式一致性。报告：reports/self_review.md"）

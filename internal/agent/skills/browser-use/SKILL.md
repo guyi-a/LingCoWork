@@ -81,7 +81,7 @@ description: 浏览器任务的**兜底路径**——起一个独立的 Chromium
 
 - 截图会写入**当前会话绑定的工作区**，落到 `workspace/screenshots/shot-<timestamp>.png`（不传 `save_path` 时的默认）
 - 用户明确指定 `save_path` 必须是**相对路径**，会拼到 workspace 前面；绝对路径会被拒绝
-- **未绑定工作区时截图会失败**，工具会返回"先 create_workspace"提示 —— 按提示先建工作区再截
+- **未绑定工作区时截图会失败** —— 请用户先在 LingCoWork 中选择工作区文件夹再截图
 - 只是想让自己"看到"页面 → 用 `read_state`（返回编号 markdown），不要为了观察去截图
 - 只有真正要**存给用户看**的图才该 screenshot
 

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/guyi-a/Interview-Agent/internal/service"
+	"github.com/guyi-a/Interview-Agent/internal/workspacegit"
 )
 
 // inlineMimeByExt whitelists extensions that may be served inline (i.e.
@@ -39,11 +40,19 @@ var inlineMimeByExt = map[string]string{
 }
 
 type WorkspaceHandler struct {
-	svc *service.WorkspaceService
+	svc     *service.WorkspaceService
+	diffSvc *service.WorkspaceDiffService
 }
 
-func NewWorkspaceHandler(svc *service.WorkspaceService) *WorkspaceHandler {
-	return &WorkspaceHandler{svc: svc}
+func NewWorkspaceHandler(
+	svc *service.WorkspaceService,
+	diffSvc ...*service.WorkspaceDiffService,
+) *WorkspaceHandler {
+	h := &WorkspaceHandler{svc: svc}
+	if len(diffSvc) > 0 {
+		h.diffSvc = diffSvc[0]
+	}
+	return h
 }
 
 func (h *WorkspaceHandler) Register(r *gin.Engine) {
@@ -51,6 +60,65 @@ func (h *WorkspaceHandler) Register(r *gin.Engine) {
 	r.GET("/conversations/:id/workspace/file", h.File)
 	r.GET("/conversations/:id/workspace/download", h.Download)
 	r.GET("/conversations/:id/workspace/inline", h.Inline)
+	r.GET("/conversations/:id/workspace/changes", h.Changes)
+	r.GET("/conversations/:id/workspace/diff", h.Diff)
+	r.GET("/conversations/:id/workspace/terminal", h.Terminal)
+}
+
+func (h *WorkspaceHandler) Changes(c *gin.Context) {
+	if h.diffSvc == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "workspace diff unavailable"})
+		return
+	}
+	result, err := h.diffSvc.Changes(
+		c.Request.Context(),
+		c.Param("id"),
+		c.Query("project_id"),
+		c.Query("scope"),
+	)
+	if err != nil {
+		writeWorkspaceDiffError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *WorkspaceHandler) Diff(c *gin.Context) {
+	if h.diffSvc == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "workspace diff unavailable"})
+		return
+	}
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path query param required"})
+		return
+	}
+	result, err := h.diffSvc.Diff(
+		c.Request.Context(),
+		c.Param("id"),
+		c.Query("project_id"),
+		c.Query("scope"),
+		path,
+	)
+	if err != nil {
+		writeWorkspaceDiffError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func writeWorkspaceDiffError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrInvalidChangeScope):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, service.ErrChangeNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	case errors.Is(err, workspacegit.ErrNotRepository),
+		errors.Is(err, workspacegit.ErrNotRepositoryRoot):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	default:
+		writeWorkspaceError(c, err)
+	}
 }
 
 type treeEntry struct {

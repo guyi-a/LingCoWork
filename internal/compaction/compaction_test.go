@@ -13,10 +13,10 @@ func testCfg() config.CompactionConfig {
 		APIKey:                           "k",
 		BaseURL:                          "https://example.invalid",
 		Model:                            "m",
-		WindowNominalTokens:              128000,
-		WindowUsableRatio:                0.85,
-		ReservedOutputTokens:             8000,
-		BufferTokens:                     4000,
+		WindowNominalTokens:              1000000,
+		WindowUsableRatio:                0.90,
+		ReservedOutputTokens:             32000,
+		BufferTokens:                     20000,
 		CharsPerToken:                    4,
 		ToolResultTruncateThresholdChars: 100,
 		ToolResultTruncateKeepChars:      20,
@@ -24,8 +24,8 @@ func testCfg() config.CompactionConfig {
 }
 
 func TestThresholdTokens_Defaults(t *testing.T) {
-	if got := ThresholdTokens(testCfg()); got != 96800 {
-		t.Fatalf("threshold=%d want 96800", got)
+	if got := ThresholdTokens(testCfg()); got != 848000 {
+		t.Fatalf("threshold=%d want 848000", got)
 	}
 }
 
@@ -59,6 +59,19 @@ func TestEstimateTokens_FallsBackToCharsWithoutAnchor(t *testing.T) {
 	}
 	if got := EstimateTokens(rows, nil, cfg); got != 300 {
 		t.Fatalf("estimate=%d want 300", got)
+	}
+}
+
+func TestEstimateTokensCountsNativeImageMarkers(t *testing.T) {
+	cfg := testCfg()
+	rows := []model.Message{{
+		Seq:     1,
+		Role:    "user",
+		Content: "[image: /tmp/a.png]\n[image: /tmp/b.jpg]\nquestion",
+	}}
+	want := len(rows[0].Content)/cfg.CharsPerToken + 2*estimatedImageTokens
+	if got := EstimateTokens(rows, nil, cfg); got != want {
+		t.Fatalf("estimate=%d want %d", got, want)
 	}
 }
 

@@ -8,6 +8,7 @@
 package multimodal
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -24,6 +25,40 @@ import (
 // can't blow up a chat request (base64 inflates ~33% on top of the raw
 // bytes, so 5 MiB on disk becomes ~6.7 MiB in the wire payload).
 const MaxImageBytes = 5 * 1024 * 1024
+
+const (
+	// Keep enough headroom below DeepSeek's 48 MiB JSON request limit for
+	// base64 expansion (~4/3), text, tool schemas and protocol overhead.
+	MaxImagesPerRequest     = 20
+	MaxImageBytesPerRequest = 30 * 1024 * 1024
+)
+
+// ImageBudget is shared by every user message assembled for one model
+// request. It prevents individually-valid historical images from combining
+// into an oversized chat/completions body.
+type ImageBudget struct {
+	images int
+	bytes  int
+}
+
+func NewImageBudget() *ImageBudget {
+	return &ImageBudget{}
+}
+
+func (b *ImageBudget) consume(size int) error {
+	if b == nil {
+		return nil
+	}
+	if b.images >= MaxImagesPerRequest {
+		return fmt.Errorf("request image count limit reached (%d)", MaxImagesPerRequest)
+	}
+	if b.bytes+size > MaxImageBytesPerRequest {
+		return fmt.Errorf("request image budget exceeded (%d MiB)", MaxImageBytesPerRequest/(1024*1024))
+	}
+	b.images++
+	b.bytes += size
+	return nil
+}
 
 // imageMarkerRE matches a full line "[image: /abs/path]" — same shape as
 // [file:] / [folder:] markers, kept multiline-anchored so a marker-shaped
@@ -57,6 +92,17 @@ var imageMarkerRE = regexp.MustCompile(`(?m)^\[image:\s*(.+?)\]\s*$`)
 // equivalent plain schema.UserMessage — a plain text message that any
 // text-only model can still handle.
 func BuildUserMessage(rawText string, multimodalEnabled bool) *schema.Message {
+	return BuildUserMessageWithBudget(rawText, multimodalEnabled, NewImageBudget())
+}
+
+// BuildUserMessageWithBudget is BuildUserMessage with a request-scoped image
+// budget. Callers assembling history should share one budget across all user
+// messages in the request.
+func BuildUserMessageWithBudget(
+	rawText string,
+	multimodalEnabled bool,
+	budget *ImageBudget,
+) *schema.Message {
 	if !multimodalEnabled {
 		// Rewrite [image: ...] → [file: ...] so the model treats the path
 		// like any other attached file and dispatches to the OCR-capable
@@ -102,6 +148,9 @@ func BuildUserMessage(rawText string, multimodalEnabled bool) *schema.Message {
 		base := filepath.Base(path)
 
 		data, mime, err := loadInlineImage(path)
+		if err == nil {
+			err = budget.consume(len(data))
+		}
 		if err != nil {
 			textBuf.WriteString(fmt.Sprintf("[image not available: %s (%s)]", base, err))
 			log.Printf("multimodal.BuildUserMessage: skip image %s: %v", path, err)
@@ -120,6 +169,7 @@ func BuildUserMessage(rawText string, multimodalEnabled bool) *schema.Message {
 					Base64Data: &b64,
 					MIMEType:   mime,
 				},
+				Detail: schema.ImageURLDetailAuto,
 			},
 		})
 		cursor = end
@@ -176,15 +226,37 @@ func loadInlineImage(path string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("too large: %d KiB > %d KiB cap",
 			st.Size()/1024, MaxImageBytes/1024)
 	}
-	mime := imageMimeFromExt(filepath.Ext(path))
-	if mime == "" {
+	declaredMIME := imageMimeFromExt(filepath.Ext(path))
+	if declaredMIME == "" {
 		return nil, "", fmt.Errorf("unsupported image type %q", filepath.Ext(path))
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
 	}
-	return data, mime, nil
+	actualMIME := imageMimeFromContent(data)
+	if actualMIME == "" {
+		return nil, "", fmt.Errorf("unsupported image content")
+	}
+	if declaredMIME != actualMIME {
+		return nil, "", fmt.Errorf("image content is %s but extension declares %s", actualMIME, declaredMIME)
+	}
+	return data, actualMIME, nil
+}
+
+func imageMimeFromContent(data []byte) string {
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}):
+		return "image/png"
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg"
+	case len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))):
+		return "image/gif"
+	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return "image/webp"
+	default:
+		return ""
+	}
 }
 
 // imageMimeFromExt maps a file extension to the wire MIME type for image

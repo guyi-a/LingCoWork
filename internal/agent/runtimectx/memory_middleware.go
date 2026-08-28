@@ -52,7 +52,7 @@ func (m *MemoryMiddleware) BeforeAgent(
 
 	userContent := m.read(m.userPath, "user")
 
-	// 临时对话没有工作区，projectPath 为空，片段里会转而说明"要先建工作区"。
+	// 未绑定工作区时 projectPath 为空，片段会说明项目记忆不可用。
 	var projectPath string
 	if ws := LoadWorkspaceInfo(ctx, m.convRepo, m.projectRepo); ws != nil {
 		projectPath = memory.ProjectPath(ws.AbsPath)

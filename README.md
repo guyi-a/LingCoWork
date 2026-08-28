@@ -27,7 +27,7 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
 
 ### Agent Harness
 
-- **24 个内置工具**：时间、RAG、人工提问、文件读写、目录操作、命令执行、文档解析、
+- **24 个内置工具**：时间、RAG、人工提问、代码搜索、文件读写、目录操作、命令执行、文档解析、
   Workspace、浏览器、联网、Skill 加载和长期记忆。准确名称以
   `tools.BuiltinToolNames()` 为准。
 - **四个运行时中间件**：Skills 索引、两级 Memory、Workspace 状态和 MCP 动态工具表均在
@@ -37,12 +37,14 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
 - **流式与子 Agent 可观测性**：Runner 事件编码为 SSE，主回复、thinking、工具调用和
   sub-agent 内部事件按层级展示并持久化。
 - **上下文压缩**：在轮次之间把旧历史折叠成摘要；原消息不删除，UI 仍展示完整记录。
+- **原生图像理解**：默认使用 `deepseek-v4-flash-vision-exp`，用户主动附加的
+  JPEG/PNG/GIF/WebP 会作为图片内容发送给 DeepSeek；关闭 `LLM_MULTIMODAL` 后改走本地 OCR。
 
 ```text
 get_current_time  rag_search          ask_user             read_file
-list_files        file_info           extract_document_text write_file
-edit_file         edit_file_lines     mkdir                write_file_chunked
-create_workspace  rm                  mv                   cp
+list_files        glob                grep                 file_info
+extract_document_text write_file      apply_patch          write_file_chunked
+mkdir             rm                  mv                   cp
 run_command       browser_use         browser_bridge       browser_use_install
 web_search        web_fetch           load_skill           remember
 ```
@@ -60,8 +62,9 @@ web_search        web_fetch           load_skill           remember
 ### Workspace 与桌面应用
 
 - 项目或会话可以挂载独立 Workspace；所有文件工具都会做边界解析，越界读写进入审批或被拒绝。
-- 右侧面板支持文件树以及 Markdown、代码、CSV、PDF、docx、pptx、图片和音视频只读预览。
-  HTML 默认按源码展示，不在应用本源中执行。
+- 右侧 Workspace 面板提供 Files / Diff / Terminal：Files 支持 Markdown、代码、CSV、PDF、
+  docx、pptx、图片和音视频只读预览；Diff 区分本轮 Agent 与全部 Git 变更；Terminal
+  通过 PTY 提供以 Workspace 为 cwd 的交互式登录 shell。HTML 默认按源码展示，不在应用本源中执行。
 - Electron 开发态加载 Vite；打包态通过 `lingcowork://app` 加载包内前端，并托管
   `darwin/arm64` Go sidecar。后端就绪后才显示窗口，退出时按进程组清理子进程。
 
@@ -195,6 +198,7 @@ OAuth token 和动态注册得到的 client id 存在 SQLite 中，不写回 JSO
 | --- | --- |
 | `DEEPSEEK_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 主 LLM（DeepSeek OpenAI 兼容） |
 | `LLM_ENABLE_THINKING` / `LLM_REASONING_EFFORT` | 是否启用思考 & effort（high/max） |
+| `LLM_MULTIMODAL` | 是否将用户附图发送给视觉模型；关闭后使用本地 OCR 回退 |
 | `APPROVAL_FAST_*` | 审批 auto 模式的快速分类器（共用 `DEEPSEEK_API_KEY`） |
 | `COMPACTION_ENABLED` / `COMPACTION_MODEL` / `COMPACTION_WINDOW_TOKENS` 等 | 跨轮次上下文压缩（共用 `DEEPSEEK_API_KEY`），见下节 |
 | `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | RAG 嵌入模型（默认 DashScope `text-embedding-v3`） |
@@ -223,7 +227,9 @@ go run ./cmd/rag-search "query keywords"      # 命令行验证检索
 - **只在轮次之间跑**。压缩发生在 `ChatService.Start` 里、agent 启动之前；HITL 恢复走 checkpoint，完全不碰这条路径。单轮内部的膨胀（比如一次 `deep_research` 连调几十个工具）不在覆盖范围内。
 - **失败静默降级**。摘要超时或报错就跳过，这一轮照常用完整历史跑，压缩绝不阻断对话。
 
-阈值 = `floor(WINDOW_TOKENS × USABLE_RATIO) − RESERVED_OUTPUT − BUFFER`，默认 `96800`。`BUFFER` 同时兜住估算里故意不算的 system prompt 和工具 schema。全部参数见 [`.env.example`](.env.example)。
+阈值 = `floor(WINDOW_TOKENS × USABLE_RATIO) − RESERVED_OUTPUT − BUFFER`，按 DeepSeek V4 的
+1M 窗口默认在 `848000` tokens 时压缩。`RESERVED_OUTPUT` 为单次 32K 输出预留空间，
+`BUFFER` 继续兜住 system prompt、工具 schema 和估算误差。全部参数见 [`.env.example`](.env.example)。
 
 每轮回复末尾会显示 `43.2k / 96.8k · 3.4s`——左边是**上下文占用**，不是本轮开销。ReAct 循环里每次模型调用的 usage 都涵盖到那一刻为止的完整上下文，累加它等于把早期历史重复计好几遍；这里取的是最后一次调用的值，也正是压缩估算的锚点，所以看到的数和决定何时折叠的数始终是同一个。压缩关闭时分母消失，只剩裸 token 数。
 
