@@ -65,6 +65,7 @@ data/*
 # Local docs
 doc/
 docs/
+examples/
 
 # TypeScript incremental build info
 *.tsbuildinfo

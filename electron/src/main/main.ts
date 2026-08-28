@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import { BackendSidecar } from './backend.js';
+import { applyLoginShellEnvFix } from './login-shell-env.js';
 
 const DEV_RENDERER_URL = 'http://localhost:5173';
 const PROD_RENDERER_URL = 'lingcowork://app/';
@@ -331,6 +332,10 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     try {
+      // Finder-launched apps inherit a minimal launchd PATH. Restore the
+      // user's shell PATH before the Go sidecar can spawn MCP servers or
+      // other commands such as node, npx, and uvx.
+      await applyLoginShellEnvFix();
       if (!(await ensureRuntimeConfig())) {
         app.quit();
         return;
