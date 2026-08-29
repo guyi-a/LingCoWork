@@ -237,7 +237,130 @@ var shellReadOnlyCommands = map[string]bool{
 	"uniq":     true,
 	"cut":      true,
 	"tr":       true,
-	"tee":      true, // stdin→stdout+file — technically writes, but agents use it in `foo | tee out` where the write is explicit; leaning safe. Reconsider if noisy.
+}
+
+var exploreProbeCommands = map[string]bool{
+	"pwd": true, "ls": true, "file": true, "stat": true, "wc": true,
+	"rg": true, "jq": true, "head": true, "tail": true,
+	"which": true, "type": true,
+}
+
+var exploreVersionCommands = map[string]bool{
+	"go": true, "node": true, "npm": true, "pnpm": true,
+	"python": true, "python3": true, "java": true, "javac": true,
+	"cargo": true, "rustc": true,
+}
+
+var exploreGitSubcommands = map[string]bool{
+	"status": true, "diff": true, "log": true, "show": true,
+	"blame": true, "rev-parse": true, "ls-files": true,
+	"ls-tree": true, "cat-file": true,
+}
+
+// IsExploreProbeCommand is stricter than the normal shell read-only fast path.
+// Explore receives run_command for repository inspection, but it must not use
+// that generic shell surface to write, execute project code, inspect arbitrary
+// absolute paths or leak process credentials.
+func IsExploreProbeCommand(command string) (bool, string) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false, "empty command"
+	}
+	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return false, "shell parse failed"
+	}
+	allowed := true
+	reason := "explore probe"
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if !allowed {
+			return false
+		}
+		if stmt, ok := node.(*syntax.Stmt); ok {
+			if len(stmt.Redirs) > 0 {
+				allowed = false
+				reason = "redirection is not allowed"
+				return false
+			}
+			return true
+		}
+		call, ok := node.(*syntax.CallExpr)
+		if !ok {
+			return true
+		}
+		words := extractWords(call.Args)
+		if len(words) == 0 || words[0] == "" {
+			allowed = false
+			reason = "dynamic or missing command"
+			return false
+		}
+		for _, word := range words {
+			if word == "" || explorePathEscapesWorkspace(word) {
+				allowed = false
+				reason = "dynamic or external path argument"
+				return false
+			}
+		}
+		cmd := filepath.Base(words[0])
+		args := words[1:]
+		switch {
+		case cmd == "git":
+			if !isExploreGitProbe(args) {
+				allowed = false
+				reason = "git command is not an allowed probe"
+				return false
+			}
+		case exploreProbeCommands[cmd]:
+			// The generic shell parser already rejected redirection and every
+			// argument was checked for absolute/traversal paths above.
+		case exploreVersionCommands[cmd]:
+			if len(args) != 1 || !helpFlagRE.MatchString(args[0]) {
+				allowed = false
+				reason = cmd + " is limited to --help/--version"
+				return false
+			}
+		default:
+			allowed = false
+			reason = "command is not on the Explore probe allowlist: " + cmd
+			return false
+		}
+		return true
+	})
+	return allowed, reason
+}
+
+func isExploreGitProbe(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		if args[i] != "--no-pager" {
+			return false
+		}
+		i++
+	}
+	if i >= len(args) || !exploreGitSubcommands[args[i]] {
+		return false
+	}
+	ok, _ := isReadOnlyGit(args)
+	return ok
+}
+
+func explorePathEscapesWorkspace(word string) bool {
+	if filepath.IsAbs(word) || strings.HasPrefix(word, "~") ||
+		strings.Contains(word, "$HOME") {
+		return true
+	}
+	if _, value, ok := strings.Cut(word, "="); ok && value != "" {
+		if filepath.IsAbs(value) || value == ".." ||
+			strings.HasPrefix(filepath.ToSlash(filepath.Clean(value)), "../") {
+			return true
+		}
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(word))
+	return cleaned == ".." || strings.HasPrefix(cleaned, "../") ||
+		strings.Contains(cleaned, "/../")
 }
 
 // helpFlagRE catches `--help` / `-h` / `--version` / `-V` — any command

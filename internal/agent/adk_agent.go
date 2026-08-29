@@ -31,6 +31,7 @@ const (
 	JobSearchAgentName       = "job_search"
 	ResumeAnalyzerAgentName  = "resume_analyzer"
 	QuestionPlannerAgentName = "question_planner"
+	ExploreAgentName         = "explore"
 )
 
 // ADKBundle 把 root agent 和 runner 一起暴露给上层。
@@ -41,15 +42,17 @@ type ADKBundle struct {
 	RootName string
 }
 
-// NewInterviewADKAgent 装配 Supervisor + DeepResearch 的双 agent 拓扑：
+// NewInterviewADKAgent assembles the root Agent plus five specialized
+// sub-agents:
 //
 //	Runner
 //	└── Supervisor (ChatModelAgent, root)
-//	    ├── baseTools...                         // workspace / fs / 其他业务工具
-//	    └── deep_research (DeepAgent wrapped via NewAgentTool)
+//	    ├── baseTools...
+//	    ├── explore (workspace-read + guarded probes)
+//	    └── business sub-agents (research/job/resume/questions)
 //
 // EmitInternalEvents=true 让 sub-agent 内部事件冒泡到 Runner 的 iter，
-// adk_handler 会把它们翻译成带 agent 字段的 SSE 帧，UI 展示 deep_research
+// adk_handler 会把它们翻译成带 agent 字段的 SSE 帧，UI 展示子 Agent
 // 在干嘛，持久化时塞进 message.Extra.sub_events 数组（带
 // parent_tool_call_id 链接回 root 的 deep_research 工具卡片）。
 // dynamicTools supplies tools that only the root agent gets and that may not
@@ -94,15 +97,7 @@ func NewInterviewADKAgent(
 	// it goes on to do passes through its own copy of the approval middleware
 	// below. Without these registrations each delegation would derive to
 	// unknown and open with an approval card, which is a prompt for nothing.
-	for _, name := range []string{
-		DeepResearchAgentName, JobSearchAgentName,
-		ResumeAnalyzerAgentName, QuestionPlannerAgentName,
-	} {
-		effects.Register(name, effect.Static(effect.Effect{
-			Kind:  effect.KindDelegate,
-			Agent: name,
-		}))
-	}
+	registerDelegateEffects(effects)
 
 	// One middleware value for every agent in the topology. Constructing it
 	// per agent would work today and drift tomorrow: a change made at one of
@@ -227,15 +222,48 @@ func NewInterviewADKAgent(
 	}
 	plannerTool := adk.NewAgentTool(ctx, plannerAgent)
 
-	// 6) Supervisor 工具列表 = baseTools + 4 个 sub-agent tool。
+	// 6) Read-mostly code explorer. Unlike the business sub-agents it gets a
+	// deliberately tiny tool surface and a second effect guard. The prompt is
+	// guidance; these two code-level boundaries are the actual permission
+	// model.
+	exploreTools, err := selectExploreTools(ctx, baseTools)
+	if err != nil {
+		return nil, err
+	}
+	exploreAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        ExploreAgentName,
+		Description: "只读代码库探索员：当实现位置未知、需要跨模块搜索或梳理调用链时使用。只读取当前 Workspace，并可运行受限 Git/文件探测命令；不修改文件、不测试、不构建。",
+		Instruction: prompts.Explore,
+		Model:       cm,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: exploreTools,
+				ToolCallMiddlewares: []compose.ToolMiddleware{
+					toolerr.Middleware(),
+					exploreGuard(effects),
+				},
+			},
+		},
+		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW},
+		MaxIterations: exploreMaxIterations,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("adk.NewChatModelAgent(explore): %w", err)
+	}
+	exploreTool := adk.NewAgentTool(ctx, exploreAgent)
+
+	// 7) Supervisor 工具列表 = baseTools + 5 个 sub-agent tool。
 	// MCP 工具不在这里，每轮由 dynamicToolsMW 注入。
-	supervisorTools := make([]tool.BaseTool, 0, len(baseTools)+4)
+	supervisorTools := make([]tool.BaseTool, 0, len(baseTools)+5)
 	supervisorTools = append(supervisorTools, baseTools...)
-	supervisorTools = append(supervisorTools, deepTool, jobTool, resumeTool, plannerTool)
+	supervisorTools = append(
+		supervisorTools,
+		deepTool, jobTool, resumeTool, plannerTool, exploreTool,
+	)
 
 	supervisor, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        SupervisorAgentName,
-		Description: "通用生产力助手，必要时委派复杂分析任务给 deep_research。",
+		Description: "通用生产力与 Coding 主 Agent；直接执行任务，并在大范围代码探索或明确业务流程中委派对应子 Agent。",
 		Instruction: supervisorInstruction,
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
@@ -264,4 +292,16 @@ func NewInterviewADKAgent(
 		Runner:   runner,
 		RootName: SupervisorAgentName,
 	}, nil
+}
+
+func registerDelegateEffects(effects *effect.Registry) {
+	for _, name := range []string{
+		DeepResearchAgentName, JobSearchAgentName,
+		ResumeAnalyzerAgentName, QuestionPlannerAgentName, ExploreAgentName,
+	} {
+		effects.Register(name, effect.Static(effect.Effect{
+			Kind:  effect.KindDelegate,
+			Agent: name,
+		}))
+	}
 }

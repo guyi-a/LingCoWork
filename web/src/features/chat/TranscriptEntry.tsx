@@ -16,6 +16,9 @@ import {
   codingToolLabel,
   isCodingTool,
 } from "./CodingToolDetails";
+import { ToolActivityGroup } from "./ToolActivityGroup";
+import { allToolsSettled, groupToolActivities } from "./tool-activity";
+import { WorkSummary } from "./WorkSummary";
 
 function CopyIcon() {
   return (
@@ -234,39 +237,8 @@ const AGENT_TOOL_NAMES = new Set([
   "deep_research",
   "resume_analyzer",
   "question_planner",
+  "explore",
 ]);
-
-// GROUPABLE_TOOL_NAMES: 这些工具在同一 turn 里连续调用 ≥2 次时会折叠成
-// 单行"TOOL name × N status"，避免侧栏被大量同名条目撑满。目前只有
-// rag_search 这类高频、每条价值低的工具适合折叠；其他工具（write_file 等）
-// 语义上每次都不同，不合并。
-const GROUPABLE_TOOL_NAMES = new Set(["rag_search"]);
-
-type ToolRow =
-  | { kind: "single"; tool: ToolCall; index: number }
-  | { kind: "group"; tools: ToolCall[]; index: number };
-
-// groupConsecutiveTools 把 tools 数组按"连续同名可折叠工具"合并成 rows。
-// 可折叠工具（GROUPABLE_TOOL_NAMES）**总是**走 ToolGroup 渲染，即使只有 1 次
-// 也显示 "× 1"，保持视觉一致（避免第 1 次渲染成可展开 ToolEntry、第 2 次
-// 突然变成紧凑组的跳变）。
-function groupConsecutiveTools(tools: ToolCall[]): ToolRow[] {
-  const rows: ToolRow[] = [];
-  let i = 0;
-  while (i < tools.length) {
-    const t = tools[i];
-    if (GROUPABLE_TOOL_NAMES.has(t.name)) {
-      let j = i + 1;
-      while (j < tools.length && tools[j].name === t.name) j++;
-      rows.push({ kind: "group", tools: tools.slice(i, j), index: i });
-      i = j;
-      continue;
-    }
-    rows.push({ kind: "single", tool: t, index: i });
-    i++;
-  }
-  return rows;
-}
 
 // renderSegments 给出一个回合要画的 ReAct 段落。
 //
@@ -285,22 +257,6 @@ function renderSegments(turn: ChatTurn): ReactSegment[] {
     { content: turn.content, tools: [] as ToolCall[] },
   ].filter((seg) => seg.content !== "" || seg.tools.length > 0);
   return legacy.length > 0 ? legacy : [{ content: "", tools: [] }];
-}
-
-// aggregateStatus 汇总一组同名工具的整体状态：任何错误 → error；任何
-// running → running；任何 pending → pending；否则 ok。cancelled 归入 ok
-// 以免整组"部分取消"闪红。
-function aggregateStatus(tools: ToolCall[]): ToolCall["status"] {
-  let hasRunning = false;
-  let hasPending = false;
-  for (const t of tools) {
-    if (t.status === "error") return "error";
-    if (t.status === "running") hasRunning = true;
-    if (t.status === "pending") hasPending = true;
-  }
-  if (hasRunning) return "running";
-  if (hasPending) return "pending";
-  return "ok";
 }
 
 export function TranscriptEntry({
@@ -331,6 +287,10 @@ export function TranscriptEntry({
     return <CompactedDivider replacedCount={turn.replacedCount} />;
   }
   const isUser = turn.role === "user";
+  const assistantProjection =
+    turn.role === "assistant"
+      ? projectAssistantTurn(turn, streaming, ownedToolIds)
+      : null;
   return (
     <article
       className={cn(
@@ -356,80 +316,14 @@ export function TranscriptEntry({
         )}
       </header>
 
-      {turn.reasoning && (
-        <ThinkingCard
-          content={turn.reasoning}
-          label={
-            streaming && !turn.content && turn.tools.length === 0
-              ? "Thinking"
-              : "Thoughts"
-          }
-          streaming={streaming && !turn.content && turn.tools.length === 0}
+      {assistantProjection && (
+        <AssistantTurnBody
+          turn={turn}
+          projection={assistantProjection}
+          allSubEvents={allSubEvents}
+          streaming={streaming}
         />
       )}
-
-      {turn.role === "assistant"
-        ? renderSegments(turn).map((seg, segIdx, segs) => {
-            const isLastSeg = segIdx === segs.length - 1;
-            return (
-              <div key={`seg-${segIdx}`}>
-                {seg.content ? (
-                  <div className="text-ink">
-                    <MessageBody
-                      content={seg.content}
-                      streaming={streaming && isLastSeg}
-                    />
-                  </div>
-                ) : (
-                  streaming &&
-                  isLastSeg &&
-                  seg.tools.length === 0 && (
-                    <span className="text-muted">…</span>
-                  )
-                )}
-                {seg.tools.length > 0 && (
-                  <div className="my-4 space-y-3">
-                    {groupConsecutiveTools(seg.tools).map((row) => {
-                      if (row.kind === "group") {
-                        return (
-                          <ToolGroup
-                            key={`grp-${row.tools[0].id || row.index}`}
-                            tools={row.tools}
-                          />
-                        );
-                      }
-                      const tc = row.tool;
-                      return (
-                        <ToolEntry
-                          key={tc.id}
-                          tool={tc}
-                          subEvents={allSubEvents.filter(
-                            (e) => e.parentToolCallId === tc.id,
-                          )}
-                        />
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        : null}
-
-      {(() => {
-        // Orphan = a subEvent captured in THIS turn's Extra whose parent
-        // isn't a tool anywhere in the transcript. Cross-turn owned ones
-        // are already picked up by their tool's ToolEntry via allSubEvents,
-        // so filtering against the transcript-wide set of tool ids avoids
-        // rendering them twice.
-        const orphans = turn.subEvents.filter((e) => {
-          if (!e.parentToolCallId) return true;
-          return !ownedToolIds.has(e.parentToolCallId);
-        });
-        return orphans.length > 0 ? (
-          <SubAgentTimeline events={orphans} />
-        ) : null;
-      })()}
 
       {isUser
         ? (() => {
@@ -469,9 +363,11 @@ export function TranscriptEntry({
 
       {turn.role === "assistant" && !streaming && (
         <TurnFooter
-          text={turn.content}
+          text={assistantProjection?.finalContent ?? turn.content}
           totalTokens={turn.totalTokens}
-          durationMs={turn.durationMs}
+          durationMs={
+            assistantProjection?.hasWork ? undefined : turn.durationMs
+          }
           contextLimit={contextLimit}
         />
       )}
@@ -483,11 +379,229 @@ export function TranscriptEntry({
   );
 }
 
+type AssistantProjection = {
+  liveSegments: ReactSegment[];
+  workSegments: ReactSegment[];
+  finalContent: string;
+  orphans: SubAgentEvent[];
+  hasWork: boolean;
+};
+
+function projectAssistantTurn(
+  turn: ChatTurn,
+  streaming: boolean,
+  ownedToolIds: Set<string>,
+): AssistantProjection {
+  const liveSegments = renderSegments(turn);
+  let finalSegmentIndex = -1;
+  if (!streaming) {
+    const lastIndex = liveSegments.length - 1;
+    const last = liveSegments[lastIndex];
+    if (last && last.tools.length === 0 && last.content.trim() !== "") {
+      finalSegmentIndex = lastIndex;
+    }
+  }
+  const finalContent =
+    finalSegmentIndex >= 0 ? liveSegments[finalSegmentIndex].content : "";
+  const workSegments = liveSegments.filter(
+    (_, index) => index !== finalSegmentIndex,
+  );
+  const orphans = turn.subEvents.filter((event) => {
+    if (!event.parentToolCallId) return true;
+    return !ownedToolIds.has(event.parentToolCallId);
+  });
+  const hasWork =
+    orphans.length > 0 ||
+    workSegments.some(
+      (segment) => segment.content.trim() !== "" || segment.tools.length > 0,
+    );
+  return {
+    liveSegments,
+    workSegments,
+    finalContent,
+    orphans,
+    hasWork,
+  };
+}
+
+function AssistantTurnBody({
+  turn,
+  projection,
+  allSubEvents,
+  streaming,
+}: {
+  turn: ChatTurn;
+  projection: AssistantProjection;
+  allSubEvents: SubAgentEvent[];
+  streaming: boolean;
+}) {
+  if (streaming) {
+    const last = projection.liveSegments.at(-1);
+    const planning = Boolean(last && allToolsSettled(last.tools));
+    const activelyThinking = turn.streamPhase === "thinking";
+    return (
+      <>
+        {turn.reasoning && (
+          <ThinkingCard
+            content={turn.reasoning}
+            label={activelyThinking ? "Thinking" : "Thoughts"}
+            streaming={activelyThinking}
+          />
+        )}
+        <AssistantSegments
+          segments={projection.liveSegments}
+          streaming
+          allSubEvents={allSubEvents}
+        />
+        {projection.orphans.length > 0 && (
+          <SubAgentTimeline events={projection.orphans} active />
+        )}
+        <LivePlanningSlot visible={planning} />
+      </>
+    );
+  }
+
+  return (
+    <>
+      {turn.reasoning && (
+        <ThinkingCard content={turn.reasoning} label="Thoughts" />
+      )}
+      {projection.hasWork && (
+        <WorkSummary durationMs={turn.durationMs}>
+          <AssistantSegments
+            segments={projection.workSegments}
+            streaming={false}
+            allSubEvents={allSubEvents}
+          />
+          {projection.orphans.length > 0 && (
+            <SubAgentTimeline events={projection.orphans} active={false} />
+          )}
+        </WorkSummary>
+      )}
+      {projection.finalContent && (
+        <div className="text-ink">
+          <MessageBody content={projection.finalContent} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function AssistantSegments({
+  segments,
+  streaming,
+  allSubEvents,
+}: {
+  segments: ReactSegment[];
+  streaming: boolean;
+  allSubEvents: SubAgentEvent[];
+}) {
+  return segments.map((segment, segmentIndex) => {
+    const isLastSegment = segmentIndex === segments.length - 1;
+    const rows = groupToolActivities(segment.tools);
+    return (
+      <div key={`seg-${segmentIndex}`}>
+        {segment.content ? (
+          <div className="text-ink">
+            <MessageBody
+              content={segment.content}
+              streaming={streaming && isLastSegment}
+            />
+          </div>
+        ) : (
+          streaming &&
+          isLastSegment &&
+          segment.tools.length === 0 && <span className="text-muted">…</span>
+        )}
+        {rows.length > 0 && (
+          <div className="my-4 space-y-3">
+            {rows.map((row, rowIndex) => {
+              if (row.kind === "activity") {
+                const sealed =
+                  !streaming ||
+                  !isLastSegment ||
+                  rowIndex < rows.length - 1;
+                if (!sealed) {
+                  return row.activity.tools.map((tool, index) => (
+                    <ToolEntry
+                      key={tool.id || `${row.index}-${index}`}
+                      tool={tool}
+                      subEvents={allSubEvents.filter(
+                        (event) => event.parentToolCallId === tool.id,
+                      )}
+                    />
+                  ));
+                }
+                return (
+                  <ToolActivityGroup
+                    key={`activity-${row.activity.kind}-${row.activity.tools[0].id || row.index}`}
+                    activity={row.activity}
+                    renderTool={(tool, index) => (
+                      <ToolEntry
+                        key={tool.id || index}
+                        tool={tool}
+                        grouped
+                        subEvents={allSubEvents.filter(
+                          (event) => event.parentToolCallId === tool.id,
+                        )}
+                      />
+                    )}
+                  />
+                );
+              }
+              const tool = row.tool;
+              return (
+                <ToolEntry
+                  key={tool.id || row.index}
+                  tool={tool}
+                  subEvents={allSubEvents.filter(
+                    (event) => event.parentToolCallId === tool.id,
+                  )}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  });
+}
+
+function LivePlanningSlot({ visible }: { visible: boolean }) {
+  return (
+    <div
+      className="my-2 flex h-5 items-center gap-2 font-mono text-[11px] text-muted"
+      aria-live="polite"
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full bg-accent transition-opacity",
+          visible ? "opacity-100 animate-pulse" : "opacity-0",
+        )}
+      />
+      <span
+        className={cn(
+          "transition-opacity",
+          visible ? "opacity-100" : "opacity-0",
+        )}
+      >
+        Planning next moves
+      </span>
+    </div>
+  );
+}
+
 // SubAgentTimeline renders sub-agent events as a compact mini assistant turn:
 // all thinking is merged into one Thoughts card, all tools become tool cards,
 // and all text is merged into one markdown body. This mirrors the root agent
 // presentation instead of exposing the raw interleaved event stream.
-function SubAgentTimeline({ events }: { events: SubAgentEvent[] }) {
+function SubAgentTimeline({
+  events,
+  active = false,
+}: {
+  events: SubAgentEvent[];
+  active?: boolean;
+}) {
   type Block = {
     agent: string;
     reasoning: string;
@@ -575,12 +689,32 @@ function SubAgentTimeline({ events }: { events: SubAgentEvent[] }) {
           )}
           {block.tools.length > 0 && (
             <div className="space-y-3">
-              {groupConsecutiveTools(block.tools).map((row) => {
-                if (row.kind === "group") {
+              {groupToolActivities(block.tools).map((row, rowIndex, rows) => {
+                if (row.kind === "activity") {
+                  const sealed =
+                    !active ||
+                    block.content.trim() !== "" ||
+                    block.errors.length > 0 ||
+                    rowIndex < rows.length - 1;
+                  if (!sealed) {
+                    return row.activity.tools.map((tool, index) => (
+                      <ToolEntry
+                        key={tool.id || `${block.agent}-${row.index}-${index}`}
+                        tool={tool}
+                      />
+                    ));
+                  }
                   return (
-                    <ToolGroup
-                      key={`grp-${block.agent}-${row.index}`}
-                      tools={row.tools}
+                    <ToolActivityGroup
+                      key={`activity-${block.agent}-${row.activity.kind}-${row.activity.tools[0].id || row.index}`}
+                      activity={row.activity}
+                      renderTool={(tool, index) => (
+                        <ToolEntry
+                          key={tool.id || `${block.agent}-${index}`}
+                          tool={tool}
+                          grouped
+                        />
+                      )}
                     />
                   );
                 }
@@ -610,40 +744,14 @@ function SubAgentTimeline({ events }: { events: SubAgentEvent[] }) {
   );
 }
 
-// ToolGroup 渲染折叠后的连续同名工具组。样式对齐 ToolEntry 但不做展开，
-// 单行显示 "TOOL name × N status"。
-function ToolGroup({ tools }: { tools: ToolCall[] }) {
-  const name = tools[0].name;
-  const status = aggregateStatus(tools);
-  const { dot, label, labelClass } = statusBits(status);
-  return (
-    <aside className="pl-4 border-l-2 border-accent font-mono text-[12px] leading-relaxed">
-      <div className="flex items-baseline gap-2">
-        <span className="text-[11px] tracking-[0.14em] uppercase font-semibold shrink-0 text-ink/75">
-          tool
-        </span>
-        <span className="text-ink">{name}</span>
-        <span className="text-ink/60 tabular-nums">× {tools.length}</span>
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 shrink-0 ml-1 text-[11px] uppercase tracking-[0.12em]",
-            labelClass,
-          )}
-        >
-          {dot}
-          <span>{label}</span>
-        </span>
-      </div>
-    </aside>
-  );
-}
-
 function ToolEntry({
   tool,
   subEvents,
+  grouped = false,
 }: {
   tool: ToolCall;
   subEvents?: SubAgentEvent[];
+  grouped?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -659,7 +767,12 @@ function ToolEntry({
   const { dot, label, labelClass } = statusBits(tool.status);
 
   return (
-    <aside className="pl-4 border-l-2 border-accent font-mono text-[12px] leading-relaxed">
+    <aside
+      className={cn(
+        "font-mono text-[12px] leading-relaxed",
+        grouped ? "px-1" : "border-l-2 border-accent pl-4",
+      )}
+    >
       <button
         type="button"
         onClick={() => expandable && setOpen((v) => !v)}
@@ -703,7 +816,10 @@ function ToolEntry({
       {open && expandable && (
         <div className="mt-2 space-y-2">
           {hasSubEvents && subEvents && (
-            <SubAgentTimeline events={subEvents} />
+            <SubAgentTimeline
+              events={subEvents}
+              active={tool.status === "running" || tool.status === "pending"}
+            />
           )}
           {!hasSubEvents && specialized && (
             <CodingToolDetails tool={tool} />

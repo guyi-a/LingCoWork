@@ -10,16 +10,17 @@ Agent Harness 能力。
 
 ## 核心架构
 
-### 五 Agent 拓扑
+### 六 Agent 拓扑
 
-`supervisor` 负责理解、派发和汇总，四个领域 Agent 通过 AgentAsTool 挂载，各自使用独立上下文：
+`supervisor` 负责直接执行、派发和汇总，五个子 Agent 通过 AgentAsTool 挂载，各自使用独立上下文：
 
 ```text
 supervisor
 ├── deep_research       多步研究与结构化报告
 ├── job_search          招聘网站搜索与岗位整理
 ├── resume_analyzer     简历与 JD 匹配分析
-└── question_planner    模拟面试题生成
+├── question_planner    模拟面试题生成
+└── explore             只读代码搜索与受限命令探测
 ```
 
 eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 interrupt 协议；本项目负责
@@ -87,7 +88,7 @@ web_search        web_fetch           load_skill           remember
 │   ├── rag-index/      # RAG 离线索引
 │   └── rag-search/     # RAG 命令行检索
 ├── internal/
-│   ├── agent/          # 五 Agent、24 个工具、Skills、运行时中间件
+│   ├── agent/          # 六 Agent、24 个工具、Skills、运行时中间件
 │   ├── approval/       # 审批模式、分类器、pending 状态
 │   ├── compaction/     # 跨轮上下文压缩
 │   ├── effect/         # 工具后果描述与推导
