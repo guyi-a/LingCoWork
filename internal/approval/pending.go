@@ -36,6 +36,13 @@ type PendingItem struct {
 	// EffectJSON 是这次审批依据的 effect.Effect 序列化结果，仅 approval 场景
 	// 有值。可能为空：老落盘数据没有这个字段，前端回退到按 Args 渲染。
 	EffectJSON string
+	// resolved/payload only live until every sibling interrupt from the same
+	// checkpoint has received an answer. Keeping partial answers in memory
+	// avoids resuming a parallel checkpoint more than once. If the process
+	// restarts before the batch is complete, all cards are intentionally
+	// presented again rather than guessing at lost user decisions.
+	resolved bool
+	payload  any
 }
 
 // PendingStore keeps in-flight approvals per conversation. In-memory index
@@ -128,40 +135,70 @@ func (s *PendingStore) Record(convID string) stream.InterruptSink {
 	})
 }
 
-// Take pops the pending item matching interruptID from convID's queue, or
-// (nil, false) if not found. Only the matched item is removed; siblings stay.
+// Resolve records one interrupt answer and returns a complete resume target
+// batch once every sibling from the same checkpoint has been answered.
 //
-// DB delete runs unconditionally — even when the in-memory lookup misses.
-// That self-heals stale rows left over from a crash between "checkpoint
-// resumed" and "in-memory pop": the stale row is dropped on the first
-// user click, so it can't keep re-appearing on future restarts.
-func (s *PendingStore) Take(convID, interruptID string) (*PendingItem, bool) {
+// Parallel tool calls are checkpointed together. Resuming after each click
+// would replay the same checkpoint multiple times; additionally, middleware
+// that sees a resume flow without its own payload may proceed implicitly.
+// Holding the answers here ensures exactly one ResumeWithParams call receives
+// every interrupt target.
+func (s *PendingStore) Resolve(
+	convID, interruptID string,
+	payload any,
+) (checkpointID string, targets map[string]any, found, ready bool) {
 	s.mu.Lock()
 	list := s.items[convID]
-	var found *PendingItem
-	for i, it := range list {
-		if it.InterruptID == interruptID {
-			s.items[convID] = append(list[:i], list[i+1:]...)
-			if len(s.items[convID]) == 0 {
-				delete(s.items, convID)
-			}
-			found = it
+	var selected *PendingItem
+	for _, item := range list {
+		if item != nil && item.InterruptID == interruptID && !item.resolved {
+			selected = item
 			break
 		}
+	}
+	if selected == nil {
+		s.mu.Unlock()
+		return "", nil, false, false
+	}
+
+	selected.resolved = true
+	selected.payload = payload
+	checkpointID = selected.CheckpointID
+
+	for _, item := range list {
+		if item != nil && item.CheckpointID == checkpointID && !item.resolved {
+			s.mu.Unlock()
+			return checkpointID, nil, true, false
+		}
+	}
+
+	targets = make(map[string]any)
+	remaining := make([]*PendingItem, 0, len(list))
+	resolvedIDs := make([]string, 0, len(list))
+	for _, item := range list {
+		if item != nil && item.CheckpointID == checkpointID {
+			targets[item.InterruptID] = item.payload
+			resolvedIDs = append(resolvedIDs, item.InterruptID)
+			continue
+		}
+		remaining = append(remaining, item)
+	}
+	if len(remaining) == 0 {
+		delete(s.items, convID)
+	} else {
+		s.items[convID] = remaining
 	}
 	s.mu.Unlock()
 
 	if s.repo != nil {
-		if err := s.repo.DeleteByInterruptID(context.Background(), convID, interruptID); err != nil {
-			log.Printf("pending_approvals delete failed (conv=%s interrupt=%s): %v",
-				convID, interruptID, err)
+		for _, id := range resolvedIDs {
+			if err := s.repo.DeleteByInterruptID(context.Background(), convID, id); err != nil {
+				log.Printf("pending_approvals batch delete failed (conv=%s interrupt=%s): %v",
+					convID, id, err)
+			}
 		}
 	}
-
-	if found == nil {
-		return nil, false
-	}
-	return found, true
+	return checkpointID, targets, true, true
 }
 
 // HasPending reports whether the conversation has anything awaiting approval.
@@ -183,7 +220,7 @@ func (s *PendingStore) List(convID string) []PendingItem {
 	}
 	out := make([]PendingItem, 0, len(list))
 	for _, it := range list {
-		if it == nil {
+		if it == nil || it.resolved {
 			continue
 		}
 		out = append(out, *it)

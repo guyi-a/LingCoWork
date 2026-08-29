@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { postQuestionAnswer, type QuestionAnswerPayload } from "@/lib/api";
+import {
+  postQuestionAnswer,
+  type InterruptDecisionResult,
+  type QuestionAnswerPayload,
+} from "@/lib/api";
 
 // PendingQuestion —— 一次 ask_user 中断，等着用户回答。跟 PendingApproval 平行，
 // 由 SSE question_required frame / GET pending 里 kind=question 的项填充。
@@ -21,7 +25,7 @@ interface QuestionStore {
     convId: string,
     interruptId: string,
     payload: QuestionAnswerPayload,
-  ) => Promise<void>;
+  ) => Promise<InterruptDecisionResult>;
 }
 
 export const useQuestionStore = create<QuestionStore>((set, get) => ({
@@ -50,12 +54,8 @@ export const useQuestionStore = create<QuestionStore>((set, get) => ({
   },
 
   answer: async (convId, interruptId, payload) => {
-    try {
-      await postQuestionAnswer(convId, interruptId, payload);
-    } catch (err) {
-      console.error("[question] post failed:", err);
-      return;
-    }
+    const result = await postQuestionAnswer(convId, interruptId, payload);
     get().drop(convId, interruptId);
+    return result;
   },
 }));

@@ -199,6 +199,7 @@ export function ApprovalBar({
   onDecision?: (
     item: PendingApproval,
     decision: "approve" | "deny",
+    resumed: boolean,
   ) => Promise<void> | void;
   onResume?: () => Promise<void> | void;
 }) {
@@ -247,11 +248,20 @@ export function ApprovalBar({
     if (busy) return;
     setBusy(true);
     try {
-      await decide(conversationID, current.interruptId, decision, withReason);
-      await onDecision?.(current, decision);
-      // Backend spun up a fresh run into a new SSE buffer; reconnect so the
-      // continuation streams into the same conversation view.
-      await onResume?.();
+      const result = await decide(
+        conversationID,
+        current.interruptId,
+        decision,
+        withReason,
+      );
+      if (result.handled) {
+        await onDecision?.(current, decision, result.resumed);
+      }
+      // A parallel checkpoint gets one continuation stream only after its
+      // final pending answer has been collected.
+      if (result.resumed) await onResume?.();
+    } catch (err) {
+      console.error("[approval] post failed:", err);
     } finally {
       setBusy(false);
     }

@@ -1063,10 +1063,14 @@ export function useChatStream(
   }, [conversationID]);
 
   const markApprovalHandled = useCallback(
-    (callId: string, decision: "approve" | "deny") => {
+    (callId: string, decision: "approve" | "deny", resumed: boolean) => {
       if (!callId) return;
       const status: ToolCall["status"] =
-        decision === "approve" ? "running" : "cancelled";
+        decision === "approve"
+          ? resumed
+            ? "running"
+            : "pending"
+          : "cancelled";
       setTurns((prev) =>
         prev.map((turn) =>
           turn.role === "assistant" ? withToolStatus(turn, callId, status) : turn,
@@ -1079,9 +1083,13 @@ export function useChatStream(
   // markQuestionAnswered 是 ask_user 版本：用户答完 → tool 卡从 pending 打
   // 回 running（等真正 resume 后再 flip 到 ok / error）；取消 → 标 cancelled。
   const markQuestionAnswered = useCallback(
-    (callId: string, cancelled: boolean) => {
+    (callId: string, cancelled: boolean, resumed: boolean) => {
       if (!callId) return;
-      const status: ToolCall["status"] = cancelled ? "cancelled" : "running";
+      const status: ToolCall["status"] = cancelled
+        ? "cancelled"
+        : resumed
+          ? "running"
+          : "pending";
       setTurns((prev) =>
         prev.map((turn) =>
           turn.role === "assistant" ? withToolStatus(turn, callId, status) : turn,

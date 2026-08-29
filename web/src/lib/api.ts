@@ -418,17 +418,22 @@ export async function cancelChat(id: string): Promise<void> {
   }).catch(() => {});
 }
 
-// postApproval sends the user's approve/deny for one paused tool call.
-// The backend fires runner.ResumeWithParams; the continuation streams over
-// the existing SSE connection, so this call only needs to resolve/reject.
-// 404 is treated as "already handled" — the caller can drop the pending
-// card without surfacing an error.
+export type InterruptDecisionResult = {
+  handled: boolean;
+  // False when this answer was recorded but sibling interrupts from the same
+  // checkpoint still need answers. Only true means a new SSE stream exists.
+  resumed: boolean;
+};
+
+// postApproval sends one answer from a possibly parallel interrupt batch.
+// 404 is treated as already handled; a successful response says whether this
+// answer completed the batch and actually resumed the checkpoint.
 export async function postApproval(
   conversationID: string,
   interruptID: string,
   decision: "approve" | "deny",
   reason?: string,
-): Promise<{ handled: boolean }> {
+): Promise<InterruptDecisionResult> {
   const res = await fetch(
     `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/approvals/${encodeURIComponent(interruptID)}`,
     {
@@ -437,9 +442,10 @@ export async function postApproval(
       body: JSON.stringify({ decision, reason }),
     },
   );
-  if (res.status === 404) return { handled: false };
+  if (res.status === 404) return { handled: false, resumed: false };
   if (!res.ok) throw new Error(`approval ${res.status}`);
-  return { handled: true };
+  const data = (await res.json()) as { resumed?: boolean };
+  return { handled: true, resumed: data.resumed === true };
 }
 
 // 一条 pending 中断的通用契约。kind 为 "approval" 时 tool/args_json 有意义；
@@ -485,7 +491,7 @@ export async function postQuestionAnswer(
   conversationID: string,
   interruptID: string,
   payload: QuestionAnswerPayload,
-): Promise<{ handled: boolean }> {
+): Promise<InterruptDecisionResult> {
   const res = await fetch(
     `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/questions/${encodeURIComponent(interruptID)}`,
     {
@@ -494,9 +500,10 @@ export async function postQuestionAnswer(
       body: JSON.stringify(payload),
     },
   );
-  if (res.status === 404) return { handled: false };
+  if (res.status === 404) return { handled: false, resumed: false };
   if (!res.ok) throw new Error(`question ${res.status}`);
-  return { handled: true };
+  const data = (await res.json()) as { resumed?: boolean };
+  return { handled: true, resumed: data.resumed === true };
 }
 
 // The set of per-conversation approval modes. Kept in sync with backend

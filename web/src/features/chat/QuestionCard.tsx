@@ -46,7 +46,11 @@ export function QuestionCard({
   // onDecision 让外层给对应 tool 卡打状态（answered → running，cancelled →
   // cancelled）以及做 sidebar refresh；不传也能工作，只是 tool 卡状态可能停
   // 在 pending 直到 resume 后端事件回填。
-  onDecision?: (callId: string, cancelled: boolean) => Promise<void> | void;
+  onDecision?: (
+    callId: string,
+    cancelled: boolean,
+    resumed: boolean,
+  ) => Promise<void> | void;
   onResume?: () => Promise<void> | void;
 }) {
   const questions = useMemo(() => parseQuestionsJson(questionsJson), [questionsJson]);
@@ -87,9 +91,14 @@ export function QuestionCard({
           selected: typeof v === "string" && v ? [v] : [],
         };
       });
-      await answer(conversationID, interruptId, { cancelled: false, answers: items });
-      await onDecision?.(callId, false);
-      await onResume?.();
+      const result = await answer(conversationID, interruptId, {
+        cancelled: false,
+        answers: items,
+      });
+      if (result.handled) await onDecision?.(callId, false, result.resumed);
+      if (result.resumed) await onResume?.();
+    } catch (err) {
+      console.error("[question] post failed:", err);
     } finally {
       setBusy(false);
     }
@@ -99,9 +108,14 @@ export function QuestionCard({
     if (busy) return;
     setBusy(true);
     try {
-      await answer(conversationID, interruptId, { cancelled: true, answers: [] });
-      await onDecision?.(callId, true);
-      await onResume?.();
+      const result = await answer(conversationID, interruptId, {
+        cancelled: true,
+        answers: [],
+      });
+      if (result.handled) await onDecision?.(callId, true, result.resumed);
+      if (result.resumed) await onResume?.();
+    } catch (err) {
+      console.error("[question] post failed:", err);
     } finally {
       setBusy(false);
     }

@@ -240,48 +240,61 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, p
 	return buf, nil
 }
 
-// Resume delivers the user's approval decision for an interrupted run and
-// re-enters the same conversation's SSE stream with a fresh iterator. Returns
-// (found, nil) on success, or (false, nil) if the interrupt id isn't known
-// (already acted on, or stale). Errors from the ADK layer bubble up.
-func (s *ChatService) Resume(convID, interruptID string, dec approval.Decision) (bool, error) {
-	item, ok := s.pending.Take(convID, interruptID)
-	if !ok {
-		return false, nil
+// Resume records one approval decision. A checkpoint can contain several
+// parallel interrupts, so the run is resumed only after every sibling has an
+// answer. The second return value tells the HTTP/frontend layer whether this
+// decision completed the batch and created a fresh SSE stream.
+func (s *ChatService) Resume(
+	convID, interruptID string,
+	dec approval.Decision,
+) (found, resumed bool, err error) {
+	checkpointID, targets, found, ready := s.pending.Resolve(convID, interruptID, dec)
+	if !found {
+		return false, false, nil
+	}
+	if !ready {
+		s.applyWaitingStatus(convID, "running")
+		return true, false, nil
 	}
 
-	// 用户已经答了这条 pending。若队列里还有别的 pending，按当前队首 kind
-	// 保留对应的 waiting_* 状态；否则视为 run 继续，切回 running。
-	s.applyWaitingStatus(convID, "running")
-
-	// The previous SSE buffer was Finish()ed when the interrupt drained the
-	// iterator, so a resumed run can't Append into it. Replace with a fresh
-	// buffer — the frontend will GET /chat/:id to reconnect and drain it.
-	buf := s.manager.Create(convID)
-	runCtx, cancel := context.WithCancel(context.Background())
-	buf.SetCancel(cancel)
-
-	go s.resumeAgent(runCtx, convID, item.CheckpointID, interruptID, dec, buf)
-	return true, nil
+	s.startResume(convID, checkpointID, targets)
+	return true, true, nil
 }
 
 // ResumeQuestion 走跟 Resume 一样的 checkpoint 恢复通道，只是 Targets 里塞
 // 的是 hitl.Answers（gob 已在 hitl 包 init 里注册），由 ask_user 工具体通过
 // GetResumeContext[hitl.Answers] 取回。
-func (s *ChatService) ResumeQuestion(convID, interruptID string, answers hitl.Answers) (bool, error) {
-	item, ok := s.pending.Take(convID, interruptID)
-	if !ok {
-		return false, nil
+func (s *ChatService) ResumeQuestion(
+	convID, interruptID string,
+	answers hitl.Answers,
+) (found, resumed bool, err error) {
+	checkpointID, targets, found, ready := s.pending.Resolve(convID, interruptID, answers)
+	if !found {
+		return false, false, nil
+	}
+	if !ready {
+		s.applyWaitingStatus(convID, "running")
+		return true, false, nil
 	}
 
+	s.startResume(convID, checkpointID, targets)
+	return true, true, nil
+}
+
+// startResume replaces the completed interrupt stream with one continuation
+// stream and supplies all decisions from that checkpoint in a single target
+// map. It must only be called by the goroutine that completed a pending batch.
+func (s *ChatService) startResume(
+	convID, checkpointID string,
+	targets map[string]any,
+) {
 	s.applyWaitingStatus(convID, "running")
 
 	buf := s.manager.Create(convID)
 	runCtx, cancel := context.WithCancel(context.Background())
 	buf.SetCancel(cancel)
 
-	go s.resumeAgent(runCtx, convID, item.CheckpointID, interruptID, answers, buf)
-	return true, nil
+	go s.resumeAgent(runCtx, convID, checkpointID, targets, buf)
 }
 
 // applyWaitingStatus 根据当前 pending 队列的队首 kind 更新会话状态：
@@ -354,14 +367,12 @@ func (s *ChatService) runAgent(ctx context.Context, convID string, msgs []*schem
 	s.consumeAndPersist(ctx, convID, iter, sink, buf, collector, nil)
 }
 
-// resumeAgent 恢复被中断的 run。payload 会以 gob 塞进 ResumeParams.Targets
-// 的 value —— 审批场景是 approval.Decision（gob 已在 approval 包 init 里注册），
-// ask_user 场景是 hitl.Answers（gob 在 hitl 包 init 里注册）。类型分岔由
-// 中断点自己在 GetResumeContext[T] 时按 T 做，service 层只负责传递。
+// resumeAgent 恢复被中断的 run。targets 一次携带同一 checkpoint 的全部
+// 中断答案；value 可以是 approval.Decision 或 hitl.Answers。
 func (s *ChatService) resumeAgent(
 	ctx context.Context,
-	convID, checkpointID, interruptID string,
-	payload any,
+	convID, checkpointID string,
+	targets map[string]any,
 	buf *stream.StreamBuffer,
 ) {
 	ctx = contextkey.WithConversationID(ctx, convID)
@@ -385,7 +396,7 @@ func (s *ChatService) resumeAgent(
 	initialRouter := rebuildOpenToolCalls(priorRows)
 
 	iter, err := s.runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{
-		Targets: map[string]any{interruptID: payload},
+		Targets: targets,
 	})
 	if err != nil {
 		log.Printf("adk resume error (conv=%s): %v", convID, err)

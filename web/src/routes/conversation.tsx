@@ -217,18 +217,24 @@ export function Conversation() {
   // state. This also runs in the same batch as the approval store's drop,
   // which is what keeps the queue from catching a momentarily idle-looking
   // conversation before resume takes over.
-  const onApprovalDecision = useCallback(async (item: { callId: string }, decision: "approve" | "deny") => {
-    setResuming(true);
-    markApprovalHandled(item.callId, decision);
+  const onApprovalDecision = useCallback(async (
+    item: { callId: string },
+    decision: "approve" | "deny",
+    resumed: boolean,
+  ) => {
+    markApprovalHandled(item.callId, decision, resumed);
     refreshConvs();
     refreshProjects();
   }, [markApprovalHandled, refreshConvs, refreshProjects]);
 
   // ask_user 场景：用户答完 / 取消后立即把对应 tool 卡从 pending 打成
   // running 或 cancelled，避免 UI 卡在 pending 状态直到 resume 事件回填。
-  const onQuestionDecision = useCallback(async (callId: string, cancelled: boolean) => {
-    setResuming(true);
-    markQuestionAnswered(callId, cancelled);
+  const onQuestionDecision = useCallback(async (
+    callId: string,
+    cancelled: boolean,
+    resumed: boolean,
+  ) => {
+    markQuestionAnswered(callId, cancelled, resumed);
     refreshConvs();
     refreshProjects();
   }, [markQuestionAnswered, refreshConvs, refreshProjects]);
@@ -237,6 +243,7 @@ export function Conversation() {
   // resume only settles once the continuation stream has fully drained — so
   // clearing the hold here can't reopen the gap it was covering.
   const onApprovalResume = useCallback(async () => {
+    setResuming(true);
     try {
       await resume();
     } finally {
@@ -298,12 +305,14 @@ export function Conversation() {
               rightActions={<ApprovalModeDropdown conversationID={id} />}
               onImageFiles={electronAPI ? onImageFiles : undefined}
             />
-            <PendingInterruptDock
-              conversationID={id}
-              onApprovalDecision={onApprovalDecision}
-              onQuestionDecision={onQuestionDecision}
-              onResume={onApprovalResume}
-            />
+            {!streaming && (
+              <PendingInterruptDock
+                conversationID={id}
+                onApprovalDecision={onApprovalDecision}
+                onQuestionDecision={onQuestionDecision}
+                onResume={onApprovalResume}
+              />
+            )}
           </div>
         </div>
         <WorkspacePanel

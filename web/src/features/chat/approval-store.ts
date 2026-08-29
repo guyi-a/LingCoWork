@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { postApproval } from "@/lib/api";
+import { postApproval, type InterruptDecisionResult } from "@/lib/api";
 
 // One paused tool call awaiting the user. Displayed by ApprovalBar as a card
 // with tool name + arg summary + [reject] [allow] buttons.
@@ -29,7 +29,7 @@ interface ApprovalStore {
     interruptId: string,
     decision: "approve" | "deny",
     reason?: string,
-  ) => Promise<void>;
+  ) => Promise<InterruptDecisionResult>;
 }
 
 export const useApprovalStore = create<ApprovalStore>((set, get) => ({
@@ -59,12 +59,8 @@ export const useApprovalStore = create<ApprovalStore>((set, get) => ({
   },
 
   decide: async (convId, interruptId, decision, reason) => {
-    try {
-      await postApproval(convId, interruptId, decision, reason);
-    } catch (err) {
-      console.error("[approval] post failed:", err);
-      return;
-    }
+    const result = await postApproval(convId, interruptId, decision, reason);
     get().drop(convId, interruptId);
+    return result;
   },
 }));

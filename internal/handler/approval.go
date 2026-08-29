@@ -102,7 +102,7 @@ func (h *ApprovalHandler) Decide(c *gin.Context) {
 		return
 	}
 
-	found, err := h.chat.Resume(convID, interruptID, dec)
+	found, resumed, err := h.chat.Resume(convID, interruptID, dec)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -114,7 +114,7 @@ func (h *ApprovalHandler) Decide(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.Status(http.StatusAccepted)
+	c.JSON(http.StatusAccepted, gin.H{"resumed": resumed})
 }
 
 // answerQuestionRequest 是 ask_user 恢复时的 body 契约。cancelled=true 时
@@ -153,7 +153,7 @@ func (h *ApprovalHandler) AnswerQuestion(c *gin.Context) {
 		}
 	}
 
-	found, err := h.chat.ResumeQuestion(convID, interruptID, payload)
+	found, resumed, err := h.chat.ResumeQuestion(convID, interruptID, payload)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -163,7 +163,7 @@ func (h *ApprovalHandler) AnswerQuestion(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.Status(http.StatusAccepted)
+	c.JSON(http.StatusAccepted, gin.H{"resumed": resumed})
 }
 
 // GetMode returns the current approval mode for a conversation. Fresh

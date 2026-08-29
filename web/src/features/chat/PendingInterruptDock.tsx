@@ -22,8 +22,13 @@ export function PendingInterruptDock({
   onApprovalDecision?: (
     item: PendingApproval,
     decision: "approve" | "deny",
+    resumed: boolean,
   ) => Promise<void> | void;
-  onQuestionDecision?: (callId: string, cancelled: boolean) => Promise<void> | void;
+  onQuestionDecision?: (
+    callId: string,
+    cancelled: boolean,
+    resumed: boolean,
+  ) => Promise<void> | void;
   onResume?: () => Promise<void> | void;
 }) {
   const approvals = useApprovalStore(
