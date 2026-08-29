@@ -361,7 +361,9 @@ export function TranscriptEntry({
           })()
         : null}
 
-      {turn.role === "assistant" && !streaming && (
+      {turn.role === "assistant" &&
+        !streaming &&
+        !assistantProjection?.hasUnsettledWork && (
         <TurnFooter
           text={assistantProjection?.finalContent ?? turn.content}
           totalTokens={turn.totalTokens}
@@ -385,6 +387,7 @@ type AssistantProjection = {
   finalContent: string;
   orphans: SubAgentEvent[];
   hasWork: boolean;
+  hasUnsettledWork: boolean;
 };
 
 function projectAssistantTurn(
@@ -393,8 +396,13 @@ function projectAssistantTurn(
   ownedToolIds: Set<string>,
 ): AssistantProjection {
   const liveSegments = renderSegments(turn);
+  const hasUnsettledWork = liveSegments.some((segment) =>
+    segment.tools.some(
+      (tool) => tool.status === "pending" || tool.status === "running",
+    ),
+  );
   let finalSegmentIndex = -1;
-  if (!streaming) {
+  if (!streaming && !hasUnsettledWork) {
     const lastIndex = liveSegments.length - 1;
     const last = liveSegments[lastIndex];
     if (last && last.tools.length === 0 && last.content.trim() !== "") {
@@ -421,6 +429,7 @@ function projectAssistantTurn(
     finalContent,
     orphans,
     hasWork,
+    hasUnsettledWork,
   };
 }
 
@@ -435,9 +444,12 @@ function AssistantTurnBody({
   allSubEvents: SubAgentEvent[];
   streaming: boolean;
 }) {
-  if (streaming) {
+  const active = streaming || projection.hasUnsettledWork;
+  if (active) {
     const last = projection.liveSegments.at(-1);
-    const planning = Boolean(last && allToolsSettled(last.tools));
+    const planning = Boolean(
+      streaming && last && allToolsSettled(last.tools),
+    );
     const activelyThinking = turn.streamPhase === "thinking";
     return (
       <>
@@ -450,11 +462,11 @@ function AssistantTurnBody({
         )}
         <AssistantSegments
           segments={projection.liveSegments}
-          streaming
+          streaming={active}
           allSubEvents={allSubEvents}
         />
         {projection.orphans.length > 0 && (
-          <SubAgentTimeline events={projection.orphans} active />
+          <SubAgentTimeline events={projection.orphans} active={active} />
         )}
         <LivePlanningSlot visible={planning} />
       </>

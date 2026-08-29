@@ -222,6 +222,7 @@ export function Conversation() {
     decision: "approve" | "deny",
     resumed: boolean,
   ) => {
+    if (resumed) setResuming(true);
     markApprovalHandled(item.callId, decision, resumed);
     refreshConvs();
     refreshProjects();
@@ -234,6 +235,7 @@ export function Conversation() {
     cancelled: boolean,
     resumed: boolean,
   ) => {
+    if (resumed) setResuming(true);
     markQuestionAnswered(callId, cancelled, resumed);
     refreshConvs();
     refreshProjects();
@@ -286,7 +288,7 @@ export function Conversation() {
         <div className="flex-1 min-w-0 flex flex-col">
           <Transcript
             turns={turns}
-            streaming={streaming}
+            streaming={streaming || resuming}
             contextLimit={contextLimit}
           />
           {/* Outside the relative wrapper on purpose: the interrupt dock
