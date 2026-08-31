@@ -33,6 +33,13 @@ interface State {
 const PREVIEW_MIN_WIDTH = 360;
 const PREVIEW_MAX_WIDTH = 760;
 
+// Coalesce refreshFiles calls: a burst of tool results (each of which bumps
+// the tree) within a short window becomes a single filesVersion bump, so the
+// workspace tree doesn't refetch + the panel doesn't re-render on every single
+// tool event during a run. That churn is what made the panel visibly flash.
+const REFRESH_THROTTLE_MS = 600;
+let lastRefreshAt = 0;
+
 export const useWorkspaceStore = create<State>()(
   persist(
     (set) => ({
@@ -86,7 +93,12 @@ export const useWorkspaceStore = create<State>()(
         }),
       toggleSwitcher: () => set((s) => ({ switcherOpen: !s.switcherOpen })),
       closeSwitcher: () => set({ switcherOpen: false }),
-      refreshFiles: () => set((s) => ({ filesVersion: s.filesVersion + 1 })),
+      refreshFiles: () => {
+        const now = Date.now();
+        if (now - lastRefreshAt < REFRESH_THROTTLE_MS) return;
+        lastRefreshAt = now;
+        set((s) => ({ filesVersion: s.filesVersion + 1 }));
+      },
       setActiveTab: (activeTab) => set({ activeTab, switcherOpen: false }),
       setDiffScope: (diffScope) =>
         set({ diffScope, selectedDiffPath: null, switcherOpen: false }),

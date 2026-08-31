@@ -103,10 +103,14 @@ export function WorkspacePanel({
   }, [resizing, setPreviewWidth]);
 
   useEffect(() => {
+    // Refresh once when a run starts; further refreshes are event-driven (the
+    // chat stream calls refreshFiles on file-affecting tool results, and
+    // refreshFiles is throttled in the store). No fixed polling here — a
+    // setInterval every 2s was triggering the workspace tree + Problems reload
+    // on a timer, which under the typewriter's per-frame work showed up as the
+    // panel flashing.
     if (!panelOpen || !conversationId || !streaming) return;
     refreshFiles();
-    const interval = window.setInterval(refreshFiles, 2000);
-    return () => window.clearInterval(interval);
   }, [conversationId, panelOpen, refreshFiles, streaming]);
 
   if (!conversationId) return null;
