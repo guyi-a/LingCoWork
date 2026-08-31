@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatClock, cn } from "@/lib/utils";
 import type {
   ChatTurn,
@@ -6,6 +6,7 @@ import type {
   SubAgentEvent,
   ToolCall,
 } from "@/hooks/useChatStream";
+import { useRevealedText } from "@/hooks/useRevealedText";
 import { MessageBody } from "./MessageBody";
 import { UserAttachmentChips } from "./UserAttachmentChips";
 import { parseAttachmentMarkers } from "@/features/chat/attachments-store";
@@ -19,6 +20,49 @@ import {
 import { ToolActivityGroup } from "./ToolActivityGroup";
 import { allToolsSettled, groupToolActivities } from "./tool-activity";
 import { WorkSummary } from "./WorkSummary";
+
+// TypewriterMessage types out the live assistant segment at a steady rate,
+// decoupled from how the network delivers it. The authoritative content in the
+// store is kept intact (copy/persist/replay all use the full text); this only
+// paces the displayed window toward it.
+//
+// `live` is the layout's "still revealing" state (drives the caret + pacing);
+// `streaming` is the real SSE flag. We keep typing the tail of a finished
+// message until `revealed` reaches the end, then fire `onSettled` so the parent
+// can switch to the compact "done" layout without the last paragraph snapping
+// into view whole.
+function TypewriterMessage({
+  content,
+  live,
+  streaming,
+  onSettled,
+}: {
+  content: string;
+  live: boolean;
+  streaming: boolean;
+  onSettled?: () => void;
+}) {
+  const shown = useRevealedText(content, live);
+  const settled = !streaming && content.length > 0 && shown.length === content.length;
+  const settledRef = useRef(false);
+  useEffect(() => {
+    if (settled && !settledRef.current) {
+      settledRef.current = true;
+      onSettled?.();
+    }
+  }, [settled, onSettled]);
+  // Re-arm when a new stream phase begins (e.g. after an approval resume that
+  // appends to the SAME segment), so the tail can settle again once it types
+  // out instead of being stuck as "live" forever.
+  useEffect(() => {
+    if (streaming) settledRef.current = false;
+  }, [streaming]);
+  return (
+    <div className="text-ink">
+      <MessageBody content={shown} streaming={live} />
+    </div>
+  );
+}
 
 function CopyIcon() {
   return (
@@ -266,6 +310,7 @@ export function TranscriptEntry({
   showRule,
   streaming,
   contextLimit,
+  onRevealFinished,
 }: {
   turn: ChatTurn;
   // Conversation-wide subEvents pool. Provided so tool cards can pick up
@@ -282,6 +327,7 @@ export function TranscriptEntry({
   // Token threshold at which history gets folded, or 0 when compaction is
   // off. Only used to give the footer's occupancy figure a denominator.
   contextLimit: number;
+  onRevealFinished?: () => void;
 }) {
   if (turn.role === "context_compacted") {
     return <CompactedDivider replacedCount={turn.replacedCount} />;
@@ -322,6 +368,7 @@ export function TranscriptEntry({
           projection={assistantProjection}
           allSubEvents={allSubEvents}
           streaming={streaming}
+          onRevealFinished={onRevealFinished}
         />
       )}
 
@@ -438,13 +485,41 @@ function AssistantTurnBody({
   projection,
   allSubEvents,
   streaming,
+  onRevealFinished,
 }: {
   turn: ChatTurn;
   projection: AssistantProjection;
   allSubEvents: SubAgentEvent[];
   streaming: boolean;
+  onRevealFinished?: () => void;
 }) {
-  const active = streaming || projection.hasUnsettledWork;
+  // revealDone: whether the last live segment has finished revealing its full
+  // text. It starts settled for a turn that is not streaming (history); while
+  // the run streams it stays false, and when the stream ends we keep the inline
+  // (typed) layout until the tail has typed out, so the final paragraph doesn't
+  // snap straight to its complete text.
+  const [revealDone, setRevealDone] = useState(!streaming);
+  const lastLiveText = Boolean(projection.liveSegments.at(-1)?.content);
+  const active =
+    streaming || projection.hasUnsettledWork || (lastLiveText && !revealDone);
+  const handleLastLiveSettled = useCallback(() => setRevealDone(true), []);
+
+  // Re-arm when a fresh run of this turn starts streaming. Deliberately NOT
+  // cleared on the done transition — that would snap the tail on completion.
+  useEffect(() => {
+    if (streaming) setRevealDone(false);
+  }, [streaming, turn.id]);
+
+  // When this turn's reveal unwinds (active -> settled), tell the route the
+  // typewriter is done so it can unlock the composer. Only the last, currently
+  // revealing turn ever transitions active true->false; history turns are
+  // active=false from the start.
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    if (wasActiveRef.current && !active) onRevealFinished?.();
+    wasActiveRef.current = active;
+  }, [active, onRevealFinished]);
+
   if (active) {
     const last = projection.liveSegments.at(-1);
     const planning = Boolean(
@@ -462,8 +537,10 @@ function AssistantTurnBody({
         )}
         <AssistantSegments
           segments={projection.liveSegments}
-          streaming={active}
+          live={active}
+          streaming={streaming}
           allSubEvents={allSubEvents}
+          onLastLiveSettled={handleLastLiveSettled}
         />
         {projection.orphans.length > 0 && (
           <SubAgentTimeline events={projection.orphans} active={active} />
@@ -482,6 +559,7 @@ function AssistantTurnBody({
         <WorkSummary durationMs={turn.durationMs}>
           <AssistantSegments
             segments={projection.workSegments}
+            live={false}
             streaming={false}
             allSubEvents={allSubEvents}
           />
@@ -501,27 +579,41 @@ function AssistantTurnBody({
 
 function AssistantSegments({
   segments,
+  live,
   streaming,
   allSubEvents,
+  onLastLiveSettled,
 }: {
   segments: ReactSegment[];
+  // Whether the turn is still being revealed (drives the caret + the live
+  // segment's typewriter). Distinct from `streaming` (the real SSE flag) so the
+  // tail can keep typing out even after the stream has ended.
+  live: boolean;
   streaming: boolean;
   allSubEvents: SubAgentEvent[];
+  onLastLiveSettled?: () => void;
 }) {
   return segments.map((segment, segmentIndex) => {
     const isLastSegment = segmentIndex === segments.length - 1;
+    const segmentLive = live && isLastSegment;
     const rows = groupToolActivities(segment.tools);
     return (
       <div key={`seg-${segmentIndex}`}>
         {segment.content ? (
-          <div className="text-ink">
-            <MessageBody
+          segmentLive ? (
+            <TypewriterMessage
               content={segment.content}
-              streaming={streaming && isLastSegment}
+              live={segmentLive}
+              streaming={streaming}
+              onSettled={isLastSegment ? onLastLiveSettled : undefined}
             />
-          </div>
+          ) : (
+            <div className="text-ink">
+              <MessageBody content={segment.content} streaming={segmentLive} />
+            </div>
+          )
         ) : (
-          streaming &&
+          live &&
           isLastSegment &&
           segment.tools.length === 0 && <span className="text-muted">…</span>
         )}
@@ -530,9 +622,7 @@ function AssistantSegments({
             {rows.map((row, rowIndex) => {
               if (row.kind === "activity") {
                 const sealed =
-                  !streaming ||
-                  !isLastSegment ||
-                  rowIndex < rows.length - 1;
+                  !live || !isLastSegment || rowIndex < rows.length - 1;
                 if (!sealed) {
                   return row.activity.tools.map((tool, index) => (
                     <ToolEntry
