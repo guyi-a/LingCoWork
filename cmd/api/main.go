@@ -37,6 +37,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/skillhub"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
+	"github.com/guyi-a/Interview-Agent/internal/workplan"
 )
 
 const (
@@ -126,6 +127,8 @@ func main() {
 	checkpointRepo := repository.NewCheckpointRepo(db)
 	pendingApprovalRepo := repository.NewPendingApprovalRepo(db)
 	compactionRepo := repository.NewCompactionRepo(db)
+	workPlanRepo := repository.NewWorkPlanRepo(db)
+	workPlanService := workplan.NewService(workPlanRepo)
 	compactor := compaction.New(compactionRepo, cfg.Compaction)
 	// Zero means "no fold coming", which the UI reads as: show the raw token
 	// count with no denominator instead of a progress readout toward a
@@ -192,6 +195,8 @@ func main() {
 	ts, effects, err := tools.Builtin(ctx, tools.Deps{
 		ProjectRepo:      projectRepo,
 		ConversationRepo: convRepo,
+		MessageRepo:      msgRepo,
+		WorkPlans:        workPlanService,
 		BrowserUseMgr:    browserMgr,
 		BridgeService:    bridgeSvc,
 		SkillLoader:      skillLoader,
@@ -229,7 +234,7 @@ func main() {
 		projectRepo,
 		effects,
 	)
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker, workPlanService)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -256,6 +261,7 @@ func main() {
 
 	chatHandler := handler.NewChatHandler(chatService)
 	approvalHandler := handler.NewApprovalHandler(chatService)
+	planHandler := handler.NewPlanHandler(workPlanService, chatService)
 	convHandler := handler.NewConversationHandler(convService, contextLimit)
 	projectHandler := handler.NewProjectHandler(projectService)
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService, workspaceDiffService)
@@ -269,6 +275,7 @@ func main() {
 	registerHealthz(r)
 	chatHandler.Register(r)
 	approvalHandler.Register(r)
+	planHandler.Register(r)
 	convHandler.Register(r)
 	projectHandler.Register(r)
 	workspaceHandler.Register(r)

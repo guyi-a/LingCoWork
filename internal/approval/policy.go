@@ -64,6 +64,7 @@ func NeedsApproval(e effect.Effect) bool {
 	switch e.Kind {
 	case effect.KindReadOnlyQuery,
 		effect.KindUserInteraction,
+		effect.KindAgentState,
 		effect.KindSkillLoad,
 		effect.KindNetwork:
 		return false

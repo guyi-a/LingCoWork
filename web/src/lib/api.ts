@@ -5,7 +5,37 @@ export type ConversationItem = {
   id: string;
   project_id?: string | null;
   title: string;
-  agent_status?: string; // "idle" | "running" | "waiting_approval"
+  agent_status?: string; // idle | running | waiting_approval | waiting_user | waiting_plan
+  chat_mode?: AgentMode;
+  updated_at: string;
+};
+
+export type AgentMode = "agent" | "plan";
+
+export type WorkItemStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export type WorkItem = {
+  id: string;
+  content: string;
+  status: WorkItemStatus;
+  position: number;
+};
+
+export type WorkPlan = {
+  id: string;
+  conversation_id: string;
+  user_message_seq: number;
+  origin: "plan" | "agent";
+  overview: string;
+  body_md: string;
+  status: "draft" | "awaiting" | "active" | "completed" | "cancelled";
+  revision: number;
+  items: WorkItem[];
+  created_at: string;
   updated_at: string;
 };
 
@@ -372,7 +402,11 @@ export async function postChat(
   id: string,
   message: string,
   signal: AbortSignal,
-  opts?: { projectId?: string; instruction?: InstructionRef },
+  opts?: {
+    projectId?: string;
+    instruction?: InstructionRef;
+    mode?: AgentMode;
+  },
 ): Promise<Response> {
   const qs = opts?.projectId
     ? `?project_id=${encodeURIComponent(opts.projectId)}`
@@ -383,6 +417,7 @@ export async function postChat(
     body: JSON.stringify({
       message,
       ...(opts?.instruction ? { instruction: opts.instruction } : {}),
+      ...(opts?.mode ? { mode: opts.mode } : {}),
     }),
     signal,
   });
@@ -397,6 +432,141 @@ export async function postChat(
     throw new Error(detail);
   }
   return res;
+}
+
+export async function getAgentMode(
+  conversationID: string,
+): Promise<AgentMode> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/agent-mode`,
+  );
+  if (!res.ok) throw new Error(`getAgentMode: ${res.status}`);
+  const data = (await res.json()) as { mode?: AgentMode };
+  return data.mode ?? "agent";
+}
+
+export async function setAgentMode(
+  conversationID: string,
+  mode: AgentMode,
+): Promise<AgentMode> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/agent-mode`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    },
+  );
+  if (!res.ok) throw new Error(`setAgentMode: ${res.status}`);
+  const data = (await res.json()) as { mode?: AgentMode };
+  return data.mode ?? mode;
+}
+
+export type PlanDraftInput = {
+  revision: number;
+  overview: string;
+  body_md: string;
+  items: WorkItem[];
+  interrupt_id?: string;
+};
+
+export async function getLatestPlan(
+  conversationID: string,
+): Promise<WorkPlan | null> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/plans/latest`,
+  );
+  if (!res.ok) throw new Error(`getLatestPlan: ${res.status}`);
+  const data = (await res.json()) as { plan?: WorkPlan | null };
+  return data.plan ?? null;
+}
+
+export async function listPlans(
+  conversationID: string,
+): Promise<WorkPlan[]> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/plans`,
+  );
+  if (!res.ok) throw new Error(`listPlans: ${res.status}`);
+  const data = (await res.json()) as { plans?: WorkPlan[] };
+  return data.plans ?? [];
+}
+
+export async function editPlan(
+  conversationID: string,
+  planID: string,
+  input: PlanDraftInput,
+): Promise<WorkPlan> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/plans/${encodeURIComponent(planID)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  const data = (await res.json().catch(() => null)) as {
+    plan?: WorkPlan;
+    error?: string;
+  } | null;
+  if (!res.ok) {
+    const err = new Error(data?.error ?? `editPlan: ${res.status}`) as Error & {
+      latest?: WorkPlan;
+    };
+    if (data?.plan) err.latest = data.plan;
+    throw err;
+  }
+  if (!data?.plan) throw new Error("editPlan: empty plan");
+  return data.plan;
+}
+
+export async function startPlan(
+  conversationID: string,
+  planID: string,
+  input: PlanDraftInput,
+): Promise<{ plan: WorkPlan; resumed: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/plans/${encodeURIComponent(planID)}/start`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  const data = (await res.json().catch(() => null)) as {
+    plan?: WorkPlan;
+    resumed?: boolean;
+    error?: string;
+  } | null;
+  if (!res.ok || !data?.plan) {
+    throw new Error(data?.error ?? `startPlan: ${res.status}`);
+  }
+  return { plan: data.plan, resumed: data.resumed === true };
+}
+
+export async function cancelPlan(
+  conversationID: string,
+  planID: string,
+  revision: number,
+  interruptID: string,
+): Promise<{ plan: WorkPlan; resumed: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationID)}/plans/${encodeURIComponent(planID)}/cancel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision, interrupt_id: interruptID }),
+    },
+  );
+  const data = (await res.json().catch(() => null)) as {
+    plan?: WorkPlan;
+    resumed?: boolean;
+    error?: string;
+  } | null;
+  if (!res.ok || !data?.plan) {
+    throw new Error(data?.error ?? `cancelPlan: ${res.status}`);
+  }
+  return { plan: data.plan, resumed: data.resumed === true };
 }
 
 export async function resumeChat(
@@ -452,7 +622,7 @@ export async function postApproval(
 // kind 为 "question" 时 questions_json 有意义（承载 hitl.Question 数组 JSON）。
 // 老版后端未升级 kind 字段时默认视为 approval。
 export type PendingInterruptItem = {
-  kind?: "approval" | "question";
+  kind?: "approval" | "question" | "plan";
   interrupt_id: string;
   call_id?: string;
   tool?: string;
@@ -461,6 +631,7 @@ export type PendingInterruptItem = {
   // 这个字段上线前落盘的 pending 行没有它，卡片回退到按 args_json 渲染。
   effect_json?: string;
   questions_json?: string;
+  plan_json?: string;
 };
 
 export type PendingApprovalItem = PendingInterruptItem; // 名字保留兼容旧调用点

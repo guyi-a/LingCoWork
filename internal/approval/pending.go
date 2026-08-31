@@ -97,6 +97,13 @@ func (s *PendingStore) Record(convID string) stream.InterruptSink {
 					item.Args = string(raw)
 				}
 			}
+		case *stream.PlanInfo:
+			item.Kind = hitl.KindPlan
+			if v != nil {
+				item.CallID = v.CallID
+				item.Tool = "create_plan"
+				item.Args = v.PlanJSON
+			}
 		}
 
 		s.mu.Lock()
@@ -207,6 +214,17 @@ func (s *PendingStore) HasPending(convID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.items[convID]) > 0
+}
+
+func (s *PendingStore) Has(convID, interruptID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.items[convID] {
+		if item != nil && item.InterruptID == interruptID && !item.resolved {
+			return true
+		}
+	}
+	return false
 }
 
 // List returns a snapshot of pending approvals for a conversation in arrival

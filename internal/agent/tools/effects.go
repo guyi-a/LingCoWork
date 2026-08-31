@@ -33,6 +33,8 @@ func registerEffects(reg *effect.Registry, d *fsDeps) {
 	// for permission to ask the user something; the tool raises its own
 	// question interrupt further down the stack.
 	reg.Register("ask_user", effect.Static(effect.Effect{Kind: effect.KindUserInteraction}))
+	reg.Register("create_plan", effect.Static(effect.Effect{Kind: effect.KindUserInteraction}))
+	reg.Register("todo_write", effect.Static(effect.Effect{Kind: effect.KindAgentState}))
 
 	// --- reads: may leave the workspace, so scope decides ---
 	reg.Register("read_file", d.readEffect("path"))
@@ -101,7 +103,7 @@ func rememberEffect(_ context.Context, argsJSON string) (effect.Effect, error) {
 // Used by the drift test and by startup checks.
 func BuiltinToolNames() []string {
 	return []string{
-		"get_current_time", "rag_search", "ask_user",
+		"get_current_time", "rag_search", "ask_user", "create_plan", "todo_write",
 		"read_file", "list_files", "glob", "grep", "file_info", "extract_document_text",
 		"write_file", "apply_patch", "mkdir",
 		"write_file_chunked",

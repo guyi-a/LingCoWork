@@ -8,6 +8,11 @@ import { PromptInput } from "@/features/chat/PromptInput";
 import { ConversationHeader } from "@/features/chat/ConversationHeader";
 import { PendingInterruptDock } from "@/features/chat/PendingInterruptDock";
 import { ApprovalModeDropdown } from "@/features/chat/ApprovalModeDropdown";
+import { AgentModeDropdown } from "@/features/chat/AgentModeDropdown";
+import { useAgentModeStore } from "@/features/chat/agent-mode-store";
+import { usePlanStore } from "@/features/chat/plan-store";
+import { PlanReviewCard } from "@/features/chat/PlanReviewCard";
+import { TodoPanel } from "@/features/chat/TodoPanel";
 import { AttachmentChips } from "@/features/chat/AttachmentChips";
 import {
   useAttachmentsStore,
@@ -24,7 +29,7 @@ import { useQuestionStore, type PendingQuestion } from "@/features/chat/question
 import { electronAPI } from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
-import type { Instruction } from "@/lib/api";
+import type { AgentMode, Instruction, WorkPlan } from "@/lib/api";
 
 // Stable empty array — Zustand selector must return the same ref when the
 // store hasn't changed, otherwise useSyncExternalStore loops (same trick
@@ -32,6 +37,7 @@ import type { Instruction } from "@/lib/api";
 const EMPTY_ATTACHMENTS: AttachedFile[] = [];
 const EMPTY_APPROVALS: PendingApproval[] = [];
 const EMPTY_QUESTIONS: PendingQuestion[] = [];
+const EMPTY_PLANS: WorkPlan[] = [];
 
 // Sidebar preview for a message whose attachment markers are already baked
 // into the text. Prose wins; a marker-only message falls back to the first
@@ -51,6 +57,7 @@ export function Conversation() {
         pending?: string;
         pendingInstruction?: Instruction;
         projectId?: string;
+        mode?: AgentMode;
       }
     | null;
   const pending = state?.pending;
@@ -60,6 +67,11 @@ export function Conversation() {
   );
   const conversationsLoaded = useConversationStore((s) => s.loaded);
   const projectId = state?.projectId ?? conversationProjectId ?? undefined;
+  const cachedMode = useAgentModeStore((s) => s.modes[id]);
+  const setModeLocal = useAgentModeStore((s) => s.setLocal);
+  const loadMode = useAgentModeStore((s) => s.load);
+  const saveMode = useAgentModeStore((s) => s.save);
+  const mode = cachedMode ?? state?.mode ?? "agent";
 
   const touch = useConversationStore((s) => s.touch);
   const refreshConvs = useConversationStore((s) => s.refresh);
@@ -68,6 +80,16 @@ export function Conversation() {
   useEffect(() => {
     if (!conversationsLoaded) void refreshConvs();
   }, [conversationsLoaded, refreshConvs]);
+
+  useEffect(() => {
+    if (state?.mode) {
+      setModeLocal(id, state.mode);
+      return;
+    }
+    void loadMode(id).catch((err) => {
+      console.error("[agent-mode] load failed:", err);
+    });
+  }, [id, loadMode, setModeLocal, state?.mode]);
 
   const attachments = useAttachmentsStore(
     (s) => s.pending[id] ?? EMPTY_ATTACHMENTS,
@@ -96,6 +118,7 @@ export function Conversation() {
   } = useChatStream(id, {
     onProjectBound,
     projectId,
+    mode,
   });
 
   // A run paused on an approval or an ask_user reports streaming=false — its
@@ -104,7 +127,13 @@ export function Conversation() {
   // queue holds behind it.
   const approvals = useApprovalStore((s) => s.pending[id] ?? EMPTY_APPROVALS);
   const questions = useQuestionStore((s) => s.pending[id] ?? EMPTY_QUESTIONS);
-  const hitlPending = approvals.length > 0 || questions.length > 0;
+  const plan = usePlanStore((s) => s.plans[id] ?? null);
+  const planHistory = usePlanStore((s) => s.history[id] ?? EMPTY_PLANS);
+  const pendingPlan = usePlanStore((s) => s.pending[id]);
+  const setPlan = usePlanStore((s) => s.setPlan);
+  const clearPendingPlan = usePlanStore((s) => s.clearPending);
+  const hitlPending =
+    approvals.length > 0 || questions.length > 0 || !!pendingPlan;
 
   // Answering an interrupt drops it from its store immediately, but the
   // continuation run only exists once resume's probe comes back. In between,
@@ -255,6 +284,39 @@ export function Conversation() {
     refreshProjects();
   }, [resume, refreshConvs, refreshProjects]);
 
+  const onModeChange = useCallback(
+    (next: AgentMode) => {
+      if (busy || hitlPending) return;
+      void saveMode(id, next).catch((err) => {
+        console.error("[agent-mode] save failed:", err);
+      });
+    },
+    [busy, hitlPending, id, saveMode],
+  );
+
+  const onPlanResolved = useCallback(
+    async (resumed: boolean, cancelled: boolean) => {
+      if (pendingPlan?.callId) {
+        markQuestionAnswered(pendingPlan.callId, cancelled, resumed);
+      }
+      clearPendingPlan(id);
+      if (!cancelled) setModeLocal(id, "agent");
+      if (resumed) await onApprovalResume();
+      refreshConvs();
+      refreshProjects();
+    },
+    [
+      clearPendingPlan,
+      id,
+      onApprovalResume,
+      markQuestionAnswered,
+      pendingPlan?.callId,
+      refreshConvs,
+      refreshProjects,
+      setModeLocal,
+    ],
+  );
+
   const pendingFiredRef = useRef(false);
   useEffect(() => {
     if (loading) return;
@@ -290,7 +352,27 @@ export function Conversation() {
             turns={turns}
             streaming={streaming || resuming}
             contextLimit={contextLimit}
+            plans={planHistory}
+            pendingPlanID={pendingPlan?.planId}
+            trailing={
+              plan &&
+              pendingPlan &&
+              pendingPlan.planId === plan.id ? (
+                <PlanReviewCard
+                  conversationID={id}
+                  plan={plan}
+                  interruptID={pendingPlan.interruptId}
+                  onPlan={(next) => setPlan(id, next)}
+                  onResolved={onPlanResolved}
+                />
+              ) : undefined
+            }
           />
+          {plan &&
+            !pendingPlan &&
+            (plan.status === "active" ||
+              plan.status === "completed" ||
+              plan.status === "cancelled") && <TodoPanel plan={plan} />}
           {/* Outside the relative wrapper on purpose: the interrupt dock
               covers that wrapper edge to edge, and a queued message is worth
               seeing while deciding on an approval. */}
@@ -304,7 +386,16 @@ export function Conversation() {
               hasAttachments={attachments.length > 0}
               topSlot={<AttachmentChips conversationID={id} />}
               leftActions={electronAPI ? <AttachButton onClick={onPickFiles} /> : undefined}
-              rightActions={<ApprovalModeDropdown conversationID={id} />}
+              rightActions={
+                <div className="flex items-center gap-2">
+                  <AgentModeDropdown
+                    mode={mode}
+                    disabled={busy || hitlPending}
+                    onChange={onModeChange}
+                  />
+                  <ApprovalModeDropdown conversationID={id} />
+                </div>
+              }
               onImageFiles={electronAPI ? onImageFiles : undefined}
             />
             {!streaming && (

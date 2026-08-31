@@ -224,3 +224,24 @@ func TestStatusReportsDisabledAndOAuthServers(t *testing.T) {
 		t.Error("an oauth server did not report itself as one")
 	}
 }
+
+func TestRecoveryForDiscoveredOAuthServerWithStoredToken(t *testing.T) {
+	creds := NewMemoryCredentialStore()
+	if err := creds.SaveToken(
+		t.Context(),
+		"kling",
+		`{"access_token":"old-access","refresh_token":"refresh","token_type":"Bearer"}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	auth := NewAuthorizer(creds, DefaultRedirectURI)
+	m := New(cfgWith(), nil, auth)
+	cfg := ServerConfig{Name: "kling", URL: "https://example.invalid/mcp"}
+
+	if cfg.UsesOAuth() {
+		t.Fatal("fixture must represent OAuth discovered at runtime")
+	}
+	if recovery := m.recoveryFor(cfg); recovery == nil {
+		t.Fatal("stored OAuth token did not enable refresh recovery")
+	}
+}

@@ -223,6 +223,12 @@ func emitInterrupt(
 					frame.QuestionsJSON = string(raw)
 				}
 			}
+		case *PlanInfo:
+			frame.Type = "plan_required"
+			if info != nil {
+				frame.ID = info.CallID
+				frame.PlanJSON = info.PlanJSON
+			}
 		default:
 			// 未知 payload 类型：给个通用 approval_required 让 UI 不炸，
 			// 但不带具体名字/参数，方便定位"哪种 interrupt 没接上"。

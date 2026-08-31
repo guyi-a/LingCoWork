@@ -55,6 +55,14 @@ export function ConversationItem({
                   等待审批
                 </span>
               )}
+              {item.agent_status === "waiting_plan" && (
+                <span
+                  className="shrink-0 rounded border border-rule bg-paper px-1.5 py-0.5 text-[10px] font-medium text-ink shadow-[0_1px_1px_rgba(20,30,50,0.04)]"
+                  title="等待确认计划"
+                >
+                  等待计划
+                </span>
+              )}
             </div>
             {!indent && (
               <div className="font-mono text-[10px] tracking-wider uppercase text-muted/75 mt-0.5">

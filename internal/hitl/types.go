@@ -46,12 +46,21 @@ type Answers struct {
 	Items []Answer `json:"items,omitempty"`
 }
 
+// PlanDecision resumes create_plan after the user edits and accepts or
+// cancels the persisted draft. PlanJSON is the canonical final snapshot from
+// the database, not the model's original proposal.
+type PlanDecision struct {
+	Cancelled bool   `json:"cancelled,omitempty"`
+	PlanJSON  string `json:"plan_json,omitempty"`
+}
+
 // PendingKind 区分一个中断是"等审批"还是"等用户回复"。
 type PendingKind string
 
 const (
 	KindApproval PendingKind = "approval"
 	KindQuestion PendingKind = "question"
+	KindPlan     PendingKind = "plan"
 )
 
 func init() {
@@ -59,4 +68,5 @@ func init() {
 	// tool.Interrupt payload 需要单独注册（放在 stream 包里跟 ApprovalInfo
 	// 一起）。
 	gob.Register(Answers{})
+	gob.Register(PlanDecision{})
 }

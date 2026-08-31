@@ -69,6 +69,12 @@ func (r *ConversationRepo) SetAgentStatus(ctx context.Context, id, status string
 		Update("agent_status", status).Error
 }
 
+func (r *ConversationRepo) SetChatMode(ctx context.Context, id, mode string) error {
+	return r.db.WithContext(ctx).Model(&model.Conversation{}).
+		Where("id = ?", id).
+		Update("chat_mode", mode).Error
+}
+
 // ListByProject returns all conversations belonging to a project.
 func (r *ConversationRepo) ListByProject(ctx context.Context, projectID string) ([]model.Conversation, error) {
 	var out []model.Conversation
@@ -104,10 +110,30 @@ func (r *ConversationRepo) Delete(ctx context.Context, id string) error {
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.Compaction{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&model.PendingApproval{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", id).Delete(&model.Checkpoint{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkspaceFileBaseline{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkspaceChangeEvent{}).Error; err != nil {
+			return err
+		}
+		var planIDs []string
+		if err := tx.Model(&model.WorkPlan{}).
+			Where("conversation_id = ?", id).
+			Pluck("id", &planIDs).Error; err != nil {
+			return err
+		}
+		if len(planIDs) > 0 {
+			if err := tx.Where("plan_id IN ?", planIDs).Delete(&model.WorkItem{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkPlan{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Conversation{}, "id = ?", id).Error

@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/guyi-a/Interview-Agent/internal/agentmode"
 	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/service"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
@@ -24,11 +25,14 @@ func (h *ChatHandler) Register(r *gin.Engine) {
 	r.POST("/chat/:id", h.Chat)
 	r.GET("/chat/:id", h.Resume)
 	r.POST("/chat/:id/cancel", h.Cancel)
+	r.GET("/conversations/:id/agent-mode", h.GetAgentMode)
+	r.POST("/conversations/:id/agent-mode", h.SetAgentMode)
 }
 
 type chatRequest struct {
 	Message     string                  `json:"message"`
 	Instruction *chatInstructionRequest `json:"instruction,omitempty"`
+	Mode        string                  `json:"mode,omitempty"`
 }
 
 type chatInstructionRequest struct {
@@ -61,7 +65,14 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		}
 	}
 
-	buf, err := h.chat.Start(c.Request.Context(), id, req.Message, instructionName, c.Query("project_id"))
+	buf, err := h.chat.Start(
+		c.Request.Context(),
+		id,
+		req.Message,
+		instructionName,
+		c.Query("project_id"),
+		req.Mode,
+	)
 	if err != nil {
 		if errors.Is(err, service.ErrWorkspaceRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请先选择工作区文件夹"})
@@ -87,6 +98,41 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 	writeSSE(c, buf)
+}
+
+func (h *ChatHandler) GetAgentMode(c *gin.Context) {
+	mode, err := h.chat.GetAgentMode(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"mode": string(mode)})
+}
+
+type agentModeRequest struct {
+	Mode string `json:"mode" binding:"required"`
+}
+
+func (h *ChatHandler) SetAgentMode(c *gin.Context) {
+	var req agentModeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	mode, err := agentmode.Parse(req.Mode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.chat.SetAgentMode(c.Request.Context(), c.Param("id"), mode); err != nil {
+		if errors.Is(err, service.ErrRunActive) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"mode": string(mode)})
 }
 
 func (h *ChatHandler) Resume(c *gin.Context) {

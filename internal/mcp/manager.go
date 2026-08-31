@@ -227,6 +227,15 @@ func (m *Manager) bringUp(ctx context.Context, name string) {
 	}
 
 	conn, err := connect(ctx, cfg, m.auth)
+	if errors.Is(err, ErrNeedsAuthorization) &&
+		m.auth != nil &&
+		useOAuthClient(ctx, cfg, m.auth) &&
+		m.auth.Refresh(ctx, cfg) {
+		// The transport normally refreshes a token whose local expiry has
+		// elapsed. Retry explicitly as well: providers can reject early, and
+		// OAuth discovered at runtime has no config flag to drive recovery.
+		conn, err = connect(ctx, cfg, m.auth)
+	}
 	if err != nil {
 		m.fail(name, gen, err)
 		return
@@ -306,10 +315,14 @@ func (m *Manager) installLocked(st *serverState, remote []mcpgo.Tool) {
 	log.Printf("mcp: server %q connected with %d tool(s)", st.cfg.Name, len(st.bindings))
 }
 
-// recoveryFor builds what a live tool needs to survive a token expiry, or nil
-// for a server where that cannot happen.
+// recoveryFor builds what a live tool needs to survive a token expiry.
+//
+// OAuth is not always declared in mcp.json: a server can advertise it during
+// the initial 401 probe, after which the persisted token is what tells future
+// connections to use OAuth. Match useOAuthClient here so those discovered
+// servers get the same refresh-and-retry path as explicitly configured ones.
 func (m *Manager) recoveryFor(cfg ServerConfig) *authRecovery {
-	if m.auth == nil || !cfg.UsesOAuth() {
+	if m.auth == nil || !useOAuthClient(context.Background(), cfg, m.auth) {
 		return nil
 	}
 	auth := m.auth

@@ -25,6 +25,8 @@ func NewDB(dsn string) (*gorm.DB, error) {
 		&model.MCPCredential{},
 		&model.WorkspaceFileBaseline{},
 		&model.WorkspaceChangeEvent{},
+		&model.WorkPlan{},
+		&model.WorkItem{},
 	); err != nil {
 		return nil, err
 	}

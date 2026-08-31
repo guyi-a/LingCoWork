@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/guyi-a/Interview-Agent/internal/hitl"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 )
 
@@ -51,6 +52,33 @@ func TestPendingStoreResolveWaitsForWholeCheckpoint(t *testing.T) {
 	}
 	if store.HasPending("conv") || len(store.List("conv")) != 0 {
 		t.Fatal("completed checkpoint should have no pending items")
+	}
+}
+
+func TestPendingStoreCarriesPlanInterruptThroughBatch(t *testing.T) {
+	store := NewPendingStore(nil)
+	store.Record("conv").Record("checkpoint", "plan-interrupt", &stream.PlanInfo{
+		PlanID:   "plan-1",
+		PlanJSON: `{"id":"plan-1"}`,
+		CallID:   "call-plan",
+	})
+	pending := store.List("conv")
+	if len(pending) != 1 ||
+		pending[0].Kind != hitl.KindPlan ||
+		pending[0].Args != `{"id":"plan-1"}` {
+		t.Fatalf("pending plan = %#v", pending)
+	}
+	_, targets, found, ready := store.Resolve(
+		"conv",
+		"plan-interrupt",
+		hitl.PlanDecision{PlanJSON: pending[0].Args},
+	)
+	if !found || !ready {
+		t.Fatalf("resolve = found %v ready %v", found, ready)
+	}
+	decision, ok := targets["plan-interrupt"].(hitl.PlanDecision)
+	if !ok || decision.PlanJSON != `{"id":"plan-1"}` {
+		t.Fatalf("plan target = %#v", targets["plan-interrupt"])
 	}
 }
 

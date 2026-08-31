@@ -338,12 +338,20 @@ function ServerRow({
           <span
             className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-muted"
             title={
-              server.authorized
+              needsAuth && server.authorized
+                ? "本机仍保存着 OAuth token，但服务器已拒绝它，需要重新授权"
+                : server.authorized
                 ? "已通过 OAuth 授权，token 存在本机数据库；删除这个服务器会一并清除"
                 : "这个服务器用 OAuth 授权"
             }
           >
-            {server.authorized ? "已授权" : "oauth"}
+            {needsAuth
+              ? server.authorized
+                ? "授权已失效"
+                : "需要授权"
+              : server.authorized
+                ? "已授权"
+                : "oauth"}
           </span>
         )}
         {server.trusted && (
@@ -370,7 +378,7 @@ function ServerRow({
               onClick={onAuthorize}
               className="inline-flex h-7 items-center rounded-lg bg-ink px-3 text-[12px] font-medium text-paper transition-opacity hover:opacity-90"
             >
-              授权
+              {server.authorized ? "重新授权" : "授权"}
             </button>
           )}
           {confirming ? (
@@ -427,7 +435,9 @@ function ServerRow({
 
       {needsAuth && (
         <p className="mt-2 rounded-lg bg-subtle/60 px-3 py-2 text-[12px] leading-5 text-muted">
-          这个服务器要求授权。点「授权」会打开浏览器，完成后会自动连上。
+          {server.authorized
+            ? "已保存的授权无法继续使用。点「重新授权」会打开浏览器，完成后会自动连上。"
+            : "这个服务器要求授权。点「授权」会打开浏览器，完成后会自动连上。"}
         </p>
       )}
 

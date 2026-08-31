@@ -41,6 +41,11 @@ func TestPolicyMatrix(t *testing.T) {
 			wantDefault: "allow", wantAuto: "allow", wantFull: "allow",
 		},
 		{
+			name:        "internal agent state update",
+			e:           effect.Effect{Kind: effect.KindAgentState},
+			wantDefault: "allow", wantAuto: "allow", wantFull: "allow",
+		},
+		{
 			// Approving a question would be approving being asked a question.
 			name:        "ask_user is never gated",
 			e:           effect.Effect{Kind: effect.KindUserInteraction},

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { PromptInput } from "@/features/chat/PromptInput";
+import { AgentModeDropdown } from "@/features/chat/AgentModeDropdown";
 import { AttachmentChips } from "@/features/chat/AttachmentChips";
 import {
   useAttachmentsStore,
@@ -12,7 +13,7 @@ import {
   electronAPI,
 } from "@/lib/electron-api";
 import { cn } from "@/lib/utils";
-import type { Instruction, ProjectItem } from "@/lib/api";
+import type { AgentMode, Instruction, ProjectItem } from "@/lib/api";
 import { useProjectStore } from "@/stores/projects";
 
 // Stable empty array — see attachments-store notes on why the selector
@@ -37,6 +38,7 @@ export function Home() {
   const [project, setProject] = useState<ProjectItem | null>(null);
   const [workspacePending, setWorkspacePending] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
+  const [mode, setMode] = useState<AgentMode>("agent");
 
   const onSend = (text: string, instruction?: Instruction) => {
     if (!project) return;
@@ -45,6 +47,7 @@ export function Home() {
         pending: text,
         pendingInstruction: instruction,
         projectId: project.id,
+        mode,
       },
     });
   };
@@ -134,6 +137,9 @@ export function Home() {
                     <AttachButton onClick={onPickFiles} />
                   )}
                 </div>
+              }
+              rightActions={
+                <AgentModeDropdown mode={mode} onChange={setMode} />
               }
               onImageFiles={project && electronAPI ? onImageFiles : undefined}
             />

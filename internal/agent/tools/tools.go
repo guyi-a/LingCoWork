@@ -15,6 +15,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/rag/retriever"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
+	"github.com/guyi-a/Interview-Agent/internal/workplan"
 )
 
 // Deps groups the dependencies tools need at registration time. They are
@@ -22,6 +23,8 @@ import (
 type Deps struct {
 	ProjectRepo      *repository.ProjectRepo
 	ConversationRepo *repository.ConversationRepo
+	MessageRepo      *repository.MessageRepo
+	WorkPlans        *workplan.Service
 	BrowserUseMgr    *browseruse.Manager
 	BridgeService    *browserbridge.Service
 	SkillLoader      *skills.Loader
@@ -60,6 +63,14 @@ func Builtin(ctx context.Context, d Deps) ([]tool.BaseTool, *effect.Registry, er
 		return nil, nil, err
 	}
 	out = append(out, askTool)
+
+	if d.WorkPlans != nil && d.MessageRepo != nil {
+		planTools, err := newPlanTools(d.WorkPlans, d.MessageRepo)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, planTools...)
+	}
 
 	fs := &fsDeps{projectRepo: d.ProjectRepo, convRepo: d.ConversationRepo}
 	registerEffects(reg, fs)

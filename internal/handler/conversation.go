@@ -38,6 +38,7 @@ type conversationListItem struct {
 	ProjectID   *string `json:"project_id,omitempty"`
 	Title       string  `json:"title"`
 	AgentStatus string  `json:"agent_status,omitempty"`
+	ChatMode    string  `json:"chat_mode,omitempty"`
 	UpdatedAt   string  `json:"updated_at"`
 }
 
@@ -60,6 +61,7 @@ func (h *ConversationHandler) List(c *gin.Context) {
 			ProjectID:   it.ProjectID,
 			Title:       it.Title,
 			AgentStatus: it.AgentStatus,
+			ChatMode:    it.ChatMode,
 			UpdatedAt:   it.UpdatedAt.Format(time.RFC3339),
 		})
 	}

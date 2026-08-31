@@ -294,6 +294,29 @@ func TestRefreshPersistsTheNewToken(t *testing.T) {
 	}
 }
 
+func TestRefreshWorksForOAuthDiscoveredAtRuntime(t *testing.T) {
+	fake := newFakeAuthServer(t)
+	creds := NewMemoryCredentialStore()
+	_ = creds.SaveClient(t.Context(), "kling", "stored-client", "")
+	_ = creds.SaveToken(
+		t.Context(),
+		"kling",
+		`{"access_token":"expired","refresh_token":"refresh"}`,
+	)
+	auth := NewAuthorizer(creds, DefaultRedirectURI)
+	srv := ServerConfig{Name: "kling", URL: fake.URL + "/mcp"}
+
+	if srv.UsesOAuth() {
+		t.Fatal("fixture must not declare oauth in config")
+	}
+	if !auth.Refresh(t.Context(), srv) {
+		t.Fatal("runtime-discovered oauth token was not refreshed")
+	}
+	if got := fake.lastTokenForm.Get("grant_type"); got != "refresh_token" {
+		t.Fatalf("grant_type = %q, want refresh_token", got)
+	}
+}
+
 func TestRefreshWithoutARefreshTokenFails(t *testing.T) {
 	fake := newFakeAuthServer(t)
 	auth := NewAuthorizer(NewMemoryCredentialStore(), DefaultRedirectURI)

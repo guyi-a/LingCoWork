@@ -20,6 +20,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
+	"github.com/guyi-a/Interview-Agent/internal/workplan"
 )
 
 // 这两个 agent name 是稳定标识：
@@ -83,6 +84,7 @@ func NewInterviewADKAgent(
 	memoryRegistry *memory.Registry,
 	userMemoryPath string,
 	changeTracker *changes.Tracker,
+	workPlans *workplan.Service,
 ) (*ADKBundle, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("ToolCallingChatModel is nil")
@@ -98,6 +100,10 @@ func NewInterviewADKAgent(
 	// below. Without these registrations each delegation would derive to
 	// unknown and open with an approval card, which is a prompt for nothing.
 	registerDelegateEffects(effects)
+	subAgentTools, err := withoutRootStateTools(ctx, baseTools)
+	if err != nil {
+		return nil, fmt.Errorf("select sub-agent tools: %w", err)
+	}
 
 	// One middleware value for every agent in the topology. Constructing it
 	// per agent would work today and drift tomorrow: a change made at one of
@@ -105,8 +111,9 @@ func NewInterviewADKAgent(
 	// rules, and the sub-agents are exactly where that would go unnoticed.
 	approvalMW := approval.Middleware(approvalModes, classifier, effects)
 	toolMiddlewares := []compose.ToolMiddleware{
-		approvalMW,
 		toolerr.Middleware(),
+		planGuard(convRepo),
+		approvalMW,
 	}
 	if changeTracker != nil {
 		toolMiddlewares = append(toolMiddlewares, changeTracker.Middleware())
@@ -127,6 +134,8 @@ func NewInterviewADKAgent(
 
 	// Only the supervisor gets this one — see the dynamicTools doc above.
 	dynamicToolsMW := runtimectx.NewDynamicToolsMiddleware(dynamicTools)
+	modeMW := runtimectx.NewModeMiddleware(convRepo)
+	workPlanMW := runtimectx.NewWorkPlanMiddleware(workPlans)
 
 	// 1) 后台研究员
 	//    - 不带 Backend：继续用我们自己的 workspace/fs 工具（baseTools），不引入 ADK 原生 filesystem
@@ -142,10 +151,10 @@ func NewInterviewADKAgent(
 		WithoutGeneralSubAgent: true,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: baseTools,
-				// approval MUST come before toolerr — toolerr also passes
-				// interrupt errors through, but the correct order avoids
-				// relying on that safety net.
+				Tools: subAgentTools,
+				// toolerr is outermost: guard/tool failures become model
+				// observations, while its interrupt-aware branch passes
+				// approval/plan control flow through untouched.
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
@@ -167,7 +176,7 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               baseTools,
+				Tools:               subAgentTools,
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
@@ -188,7 +197,7 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               baseTools,
+				Tools:               subAgentTools,
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
@@ -210,7 +219,7 @@ func NewInterviewADKAgent(
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               baseTools,
+				Tools:               subAgentTools,
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
@@ -275,7 +284,7 @@ func NewInterviewADKAgent(
 			// Runner's iter so the UI can show real-time progress.
 			EmitInternalEvents: true,
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, dynamicToolsMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, dynamicToolsMW, modeMW, workPlanMW},
 		MaxIterations: 50,
 	})
 	if err != nil {

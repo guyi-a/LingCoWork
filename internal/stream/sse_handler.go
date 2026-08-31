@@ -81,6 +81,8 @@ type Frame struct {
 	// should answer. Kept as string so the wire schema stays flat and the
 	// frontend can lazily decode.
 	QuestionsJSON string `json:"questions_json,omitempty"`
+	// plan_required / plan_update / todo_update — canonical WorkPlan snapshot.
+	PlanJSON string `json:"plan_json,omitempty"`
 
 	// Usage
 	Prompt int `json:"prompt,omitempty"`
@@ -126,6 +128,15 @@ type QuestionInfo struct {
 	// CallID lets the frontend pin the question card visually next to the
 	// tool_call frame that spawned it (mirrors ApprovalInfo.CallID).
 	CallID string
+}
+
+// PlanInfo is the create_plan interrupt payload. The full snapshot is already
+// persisted; carrying it here avoids a second request before the live review
+// card can render.
+type PlanInfo struct {
+	PlanID   string
+	PlanJSON string
+	CallID   string
 }
 
 // ToolCallRecord captures the shape of a single tool_call decided by an

@@ -14,6 +14,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/agent/contextkey"
 	"github.com/guyi-a/Interview-Agent/internal/agent/multimodal"
 	"github.com/guyi-a/Interview-Agent/internal/agent/toolerr"
+	"github.com/guyi-a/Interview-Agent/internal/agentmode"
 	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/compaction"
 	"github.com/guyi-a/Interview-Agent/internal/hitl"
@@ -27,6 +28,7 @@ var (
 	ErrWorkspaceRequired = errors.New("a workspace project is required")
 	ErrProjectNotFound   = errors.New("workspace project not found")
 	ErrProjectMismatch   = errors.New("conversation is already bound to another project")
+	ErrRunActive         = errors.New("cannot change agent mode while a run or user interaction is active")
 )
 
 type ChatService struct {
@@ -43,6 +45,40 @@ type ChatService struct {
 	// compactor is nil when context compaction isn't configured; all of its
 	// methods tolerate a nil receiver, so call sites don't branch.
 	compactor *compaction.Compactor
+}
+
+func (s *ChatService) GetAgentMode(
+	ctx context.Context,
+	convID string,
+) (agentmode.Mode, error) {
+	conv, err := s.convRepo.Get(ctx, convID)
+	if err != nil {
+		return "", err
+	}
+	if conv == nil {
+		return agentmode.Agent, nil
+	}
+	return agentmode.Parse(conv.ChatMode)
+}
+
+func (s *ChatService) HasPendingInterrupt(convID, interruptID string) bool {
+	return s != nil && s.pending != nil && s.pending.Has(convID, interruptID)
+}
+
+func (s *ChatService) SetAgentMode(
+	ctx context.Context,
+	convID string,
+	mode agentmode.Mode,
+) error {
+	parsed, err := agentmode.Parse(string(mode))
+	if err != nil {
+		return err
+	}
+	if (s.manager != nil && s.manager.IsStreaming(convID)) ||
+		(s.pending != nil && s.pending.HasPending(convID)) {
+		return ErrRunActive
+	}
+	return s.convRepo.SetChatMode(ctx, convID, string(parsed))
 }
 
 func NewChatService(
@@ -131,7 +167,14 @@ func (s *ChatService) prepareUserMessage(userMsg, instructionName string) (prepa
 //   - loads prior messages as context
 //   - persists the new user message
 //   - kicks off the ADK Runner in a goroutine, persists assistant reply when done
-func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, projectID string) (*stream.StreamBuffer, error) {
+func (s *ChatService) Start(
+	ctx context.Context,
+	id, userMsg, instructionName, projectID, rawMode string,
+) (*stream.StreamBuffer, error) {
+	mode, err := agentmode.Parse(rawMode)
+	if err != nil {
+		return nil, err
+	}
 	prepared, err := s.prepareUserMessage(userMsg, instructionName)
 	if err != nil {
 		return nil, err
@@ -163,6 +206,9 @@ func (s *ChatService) Start(ctx context.Context, id, userMsg, instructionName, p
 	}
 
 	if err := s.convRepo.Upsert(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.convRepo.SetChatMode(ctx, id, string(mode)); err != nil {
 		return nil, err
 	}
 
@@ -281,6 +327,27 @@ func (s *ChatService) ResumeQuestion(
 	return true, true, nil
 }
 
+func (s *ChatService) ResumePlan(
+	convID, interruptID string,
+	decision hitl.PlanDecision,
+) (found, resumed bool, err error) {
+	checkpointID, targets, found, ready := s.pending.Resolve(convID, interruptID, decision)
+	if !found {
+		return false, false, nil
+	}
+	if !ready {
+		s.applyWaitingStatus(convID, "running")
+		return true, false, nil
+	}
+	if !decision.Cancelled {
+		if err := s.convRepo.SetChatMode(context.Background(), convID, string(agentmode.Agent)); err != nil {
+			return true, false, err
+		}
+	}
+	s.startResume(convID, checkpointID, targets)
+	return true, true, nil
+}
+
 // startResume replaces the completed interrupt stream with one continuation
 // stream and supplies all decisions from that checkpoint in a single target
 // map. It must only be called by the goroutine that completed a pending batch.
@@ -304,9 +371,12 @@ func (s *ChatService) startResume(
 func (s *ChatService) applyWaitingStatus(convID, fallbackWhenEmpty string) {
 	status := fallbackWhenEmpty
 	if items := s.pending.List(convID); len(items) > 0 {
-		if items[0].Kind == hitl.KindQuestion {
+		switch items[0].Kind {
+		case hitl.KindQuestion:
 			status = "waiting_user"
-		} else {
+		case hitl.KindPlan:
+			status = "waiting_plan"
+		default:
 			status = "waiting_approval"
 		}
 	}
@@ -458,6 +528,8 @@ func (s *ChatService) approvalSink(convID string) stream.InterruptSink {
 		status := "waiting_approval"
 		if _, ok := info.(*stream.QuestionInfo); ok {
 			status = "waiting_user"
+		} else if _, ok := info.(*stream.PlanInfo); ok {
+			status = "waiting_plan"
 		}
 		_ = s.convRepo.SetAgentStatus(context.Background(), convID, status)
 	})

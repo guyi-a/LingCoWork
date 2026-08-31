@@ -75,3 +75,27 @@ func TestExplorePromptDefinesReadMostlyContractAndOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanAndTodoPromptsDefineLifecycle(t *testing.T) {
+	for _, required := range []string{
+		"只读 Plan 模式",
+		"不得修改文件",
+		"调用 create_plan",
+		"同一 checkpoint",
+	} {
+		if !strings.Contains(Plan, required) {
+			t.Errorf("Plan missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"## 结构化 Todo",
+		"todo_write",
+		"最多一个任务为 in_progress",
+		"必要验证真实完成后",
+		"cancelled",
+	} {
+		if !strings.Contains(General, required) {
+			t.Errorf("General missing %q", required)
+		}
+	}
+}

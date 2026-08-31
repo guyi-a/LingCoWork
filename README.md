@@ -28,10 +28,10 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
 
 ### Agent Harness
 
-- **24 个内置工具**：时间、RAG、人工提问、代码搜索、文件读写、目录操作、命令执行、文档解析、
+- **26 个内置工具**：时间、RAG、人工提问、Plan/Todo、代码搜索、文件读写、目录操作、命令执行、文档解析、
   Workspace、浏览器、联网、Skill 加载和长期记忆。准确名称以
   `tools.BuiltinToolNames()` 为准。
-- **四个运行时中间件**：Skills 索引、两级 Memory、Workspace 状态和 MCP 动态工具表均在
+- **六个运行时中间件**：Skills 索引、两级 Memory、Workspace、MCP 动态工具、Agent/Plan 模式和结构化任务状态均在
   每轮运行前刷新；安装 Skill 或完成 OAuth 后无需重启 Agent。
 - **Effect 审批**：策略判断的是调用后果，而不是工具名。未知 effect 默认询问用户；
   pending approval 和 checkpoint 会落库，页面刷新或进程重启后仍可恢复。
@@ -48,6 +48,7 @@ extract_document_text write_file      apply_patch          write_file_chunked
 mkdir             rm                  mv                   cp
 run_command       browser_use         browser_bridge       browser_use_install
 web_search        web_fetch           load_skill           remember
+create_plan       todo_write
 ```
 
 ### 动态能力
@@ -88,7 +89,7 @@ web_search        web_fetch           load_skill           remember
 │   ├── rag-index/      # RAG 离线索引
 │   └── rag-search/     # RAG 命令行检索
 ├── internal/
-│   ├── agent/          # 六 Agent、24 个工具、Skills、运行时中间件
+│   ├── agent/          # 六 Agent、26 个工具、Skills、运行时中间件
 │   ├── approval/       # 审批模式、分类器、pending 状态
 │   ├── compaction/     # 跨轮上下文压缩
 │   ├── effect/         # 工具后果描述与推导
@@ -98,6 +99,7 @@ web_search        web_fetch           load_skill           remember
 │   ├── memory/         # 两级长期记忆
 │   ├── rag/            # chunker、embedding、indexer、retriever
 │   ├── repository/     # SQLite / GORM 仓库
+│   ├── workplan/       # Plan/Todo 持久化、编辑与状态校验
 │   ├── service/        # 对话、项目、Workspace 领域服务
 │   ├── skillhub/       # Skill 市场与安装
 │   └── stream/         # SSE Buffer 与阶段追踪

@@ -9,10 +9,13 @@ import {
   type PersistedMessage,
   type Instruction,
   type UserInstructionSnapshot,
+  type AgentMode,
+  type WorkPlan,
 } from "@/lib/api";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useApprovalStore } from "@/features/chat/approval-store";
 import { useQuestionStore } from "@/features/chat/question-store";
+import { usePlanStore } from "@/features/chat/plan-store";
 
 export type ToolCall = {
   id: string;
@@ -59,6 +62,7 @@ export type SubAgentEvent = {
 // — the summary goes to the model, not to the screen.
 export type ChatTurn = {
   id: string;
+  seq?: number;
   role: "user" | "assistant" | "context_compacted";
   content: string;
   reasoning: string;
@@ -89,6 +93,9 @@ type Frame = {
     | "usage"
     | "approval_required"
     | "question_required"
+    | "plan_required"
+    | "plan_update"
+    | "todo_update"
     | "context_compacted"
     | "done"
     | "error";
@@ -116,6 +123,7 @@ type Frame = {
   checkpoint_id?: string;
   interrupt_id?: string;
   questions_json?: string;
+  plan_json?: string;
   // approval_required — 后端 effect 的序列化结果，卡片优先用它描述这次调用。
   effect_json?: string;
   // usage — one frame per model call, so `total` is the context that call
@@ -361,6 +369,7 @@ function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
           ? withDerivedFlat(
               {
                 id: `db-${r.seq}`,
+                seq: r.seq,
                 role: "assistant",
                 content: "",
                 reasoning: r.reasoning_content ?? "",
@@ -394,6 +403,7 @@ function fromPersisted(rows: PersistedMessage[]): ChatTurn[] {
       }
       return {
         id: `db-${r.seq}`,
+        seq: r.seq,
         role: "user" as const,
         content:
           (r.user_instruction ?? r.instruction)?.raw_input ?? r.content,
@@ -431,6 +441,7 @@ async function runSSELoop(
   // onInterruptRequired 处理任意 HITL 中断 frame（approval_required /
   // question_required）。上游按 f.type 分发到不同 store。
   onInterruptRequired: ((frame: Frame) => void) | undefined,
+  onPlanUpdate: ((plan: WorkPlan) => void) | undefined,
   onCompacted: ((frame: Frame) => void) | undefined,
   // Epoch ms of when this run was started, or undefined when we joined a run
   // already in flight (resume) and therefore can't time it honestly.
@@ -570,8 +581,19 @@ async function runSSELoop(
           break;
         case "approval_required":
         case "question_required":
+        case "plan_required":
           if (f.interrupt_id) {
             onInterruptRequired?.(f);
+          }
+          break;
+        case "plan_update":
+        case "todo_update":
+          if (f.plan_json) {
+            try {
+              onPlanUpdate?.(JSON.parse(f.plan_json) as WorkPlan);
+            } catch {
+              // A malformed state frame must not abort the chat stream.
+            }
           }
           break;
         case "context_compacted":
@@ -618,6 +640,7 @@ export function useChatStream(
   opts?: {
     onProjectBound?: (e: ProjectBoundEvent) => void;
     projectId?: string;
+    mode?: AgentMode;
   },
 ) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -638,6 +661,8 @@ export function useChatStream(
   refreshWorkspaceFilesRef.current = refreshWorkspaceFiles;
   const projectIdRef = useRef(opts?.projectId);
   projectIdRef.current = opts?.projectId;
+  const modeRef = useRef<AgentMode>(opts?.mode ?? "agent");
+  modeRef.current = opts?.mode ?? "agent";
   const addApproval = useApprovalStore((s) => s.add);
   const clearApprovals = useApprovalStore((s) => s.clear);
   const addApprovalRef = useRef(addApproval);
@@ -650,6 +675,18 @@ export function useChatStream(
   const clearQuestionsRef = useRef(clearQuestions);
   addQuestionRef.current = addQuestion;
   clearQuestionsRef.current = clearQuestions;
+  const setPlan = usePlanStore((s) => s.setPlan);
+  const setPendingPlan = usePlanStore((s) => s.setPending);
+  const clearPendingPlan = usePlanStore((s) => s.clearPending);
+  const loadPlan = usePlanStore((s) => s.load);
+  const setPlanRef = useRef(setPlan);
+  const setPendingPlanRef = useRef(setPendingPlan);
+  const clearPendingPlanRef = useRef(clearPendingPlan);
+  const loadPlanRef = useRef(loadPlan);
+  setPlanRef.current = setPlan;
+  setPendingPlanRef.current = setPendingPlan;
+  clearPendingPlanRef.current = clearPendingPlan;
+  loadPlanRef.current = loadPlan;
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
 
@@ -793,6 +830,20 @@ export function useChatStream(
                 callId: f.id ?? "",
                 questionsJson: f.questions_json ?? "",
               });
+            } else if (f.type === "plan_required") {
+              if (f.plan_json) {
+                try {
+                  const plan = JSON.parse(f.plan_json) as WorkPlan;
+                  setPlanRef.current(conversationID, plan);
+                  setPendingPlanRef.current(conversationID, {
+                    interruptId: f.interrupt_id,
+                    planId: plan.id,
+                    callId: f.id ?? "",
+                  });
+                } catch {
+                  console.error("[plan] invalid plan_required payload");
+                }
+              }
             } else {
               addApprovalRef.current(conversationID, {
                 interruptId: f.interrupt_id,
@@ -803,6 +854,7 @@ export function useChatStream(
               });
             }
           },
+          (plan) => setPlanRef.current(conversationID, plan),
           (f) => {
             // The fold covered everything BEFORE this run, so the divider
             // belongs above the user message that started it — not where
@@ -875,12 +927,20 @@ export function useChatStream(
       const initialTurns = fromPersisted(history.messages);
       setTurns(initialTurns);
 
+      let latestPlan: WorkPlan | null = null;
+      try {
+        latestPlan = await loadPlanRef.current(conversationID);
+      } catch (err) {
+        if (!cancelled) console.error("[plan] load failed:", err);
+      }
+
       try {
         const items = await listPendingApprovals(conversationID);
         if (cancelled) return;
         // 两类中断共用一个 REST 端点，前端拉回来后按 kind 分发到各自的 store。
         clearApprovalsRef.current(conversationID);
         clearQuestionsRef.current(conversationID);
+        clearPendingPlanRef.current(conversationID);
         for (const item of items) {
           if (!item.interrupt_id) continue;
           if (item.kind === "question") {
@@ -889,6 +949,22 @@ export function useChatStream(
               callId: item.call_id ?? "",
               questionsJson: item.questions_json ?? "",
             });
+          } else if (item.kind === "plan") {
+            if (item.plan_json) {
+              try {
+                const persisted = JSON.parse(item.plan_json) as WorkPlan;
+                const plan =
+                  latestPlan?.id === persisted.id ? latestPlan : persisted;
+                setPlanRef.current(conversationID, plan);
+                setPendingPlanRef.current(conversationID, {
+                  interruptId: item.interrupt_id,
+                  planId: plan.id,
+                  callId: item.call_id ?? "",
+                });
+              } catch {
+                console.error("[plan] invalid pending payload");
+              }
+            }
           } else {
             addApprovalRef.current(conversationID, {
               interruptId: item.interrupt_id,
@@ -1025,6 +1101,7 @@ export function useChatStream(
         res = await postChat(conversationID, trimmed, controller.signal, {
           projectId: projectIdRef.current,
           instruction: instruction ? { name: instruction.name } : undefined,
+          mode: modeRef.current,
         });
       } catch (err) {
         if ((err as { name?: string }).name === "AbortError") {

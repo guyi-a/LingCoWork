@@ -52,6 +52,10 @@ const (
 	// its own question interrupt downstream.
 	KindUserInteraction Kind = "user-interaction"
 	KindReadOnlyQuery   Kind = "readonly-query"
+	// KindAgentState updates LingCoWork's internal Plan/Todo state. It does
+	// not touch the workspace or an external system and is never approval-
+	// gated; the update remains visible and editable in the conversation UI.
+	KindAgentState Kind = "agent-state"
 	// KindDelegate is a sub-agent invoked as a tool. It has no side effect of
 	// its own; whatever the sub-agent does internally passes through that
 	// sub-agent's own approval middleware.
