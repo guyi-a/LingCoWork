@@ -136,6 +136,9 @@ func (r *ConversationRepo) Delete(ctx context.Context, id string) error {
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.WorkPlan{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&model.ValidationRun{}).Error; err != nil {
+			return err
+		}
 		return tx.Delete(&model.Conversation{}, "id = ?", id).Error
 	})
 }

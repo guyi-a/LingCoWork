@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type WorkspaceTab = "files" | "diff" | "terminal";
+export type WorkspaceTab = "files" | "diff" | "problems" | "terminal";
 export type WorkspaceDiffScope = "agent" | "all";
 
 interface State {

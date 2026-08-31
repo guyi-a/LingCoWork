@@ -17,6 +17,14 @@ func TestStatusNumStatAndDiff(t *testing.T) {
 	git(t, root, "add", ".")
 	git(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
 		"commit", "-m", "initial")
+	branch, detached, err := Branch(context.Background(), root)
+	if err != nil || branch == "" || detached {
+		t.Fatalf("Branch = %q detached=%v err=%v", branch, detached, err)
+	}
+	if ahead, behind, hasUpstream, err := AheadBehind(context.Background(), root); err != nil ||
+		ahead != 0 || behind != 0 || hasUpstream {
+		t.Fatalf("AheadBehind = %d/%d upstream=%v err=%v", ahead, behind, hasUpstream, err)
+	}
 
 	writeFile(t, root, "modified.txt", "after\nextra\n")
 	if err := os.Remove(filepath.Join(root, "deleted.txt")); err != nil {

@@ -14,6 +14,8 @@ func TestGeneralContainsPermanentCodingLoop(t *testing.T) {
 		"重新 read_file",
 		"apply_patch",
 		"运行仓库已有的 formatter",
+		"validation_kind",
+		"go test -json",
 		"git diff -- <相关路径>",
 		"commit、push",
 		"只有用户明确要求",

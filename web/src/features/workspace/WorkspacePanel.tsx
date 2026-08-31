@@ -12,7 +12,9 @@ import { WorkspaceTree } from "./WorkspaceTree";
 import { FilePreview } from "./FilePreview";
 import { cn } from "@/lib/utils";
 import { WorkspaceDiffPanel } from "./WorkspaceDiff";
+import { WorkspaceProblems } from "./WorkspaceProblems";
 import type { WorkspaceTab } from "./store";
+import { useProblemsStore } from "./problems-store";
 
 const WorkspaceTerminal = lazy(() =>
   import("./WorkspaceTerminal").then((module) => ({
@@ -33,6 +35,7 @@ export function WorkspacePanel({
   const previewWidth = useWorkspaceStore((s) => s.previewWidth);
   const setPreviewWidth = useWorkspaceStore((s) => s.setPreviewWidth);
   const refreshFiles = useWorkspaceStore((s) => s.refreshFiles);
+  const filesVersion = useWorkspaceStore((s) => s.filesVersion);
   const activeTab = useWorkspaceStore((s) => s.activeTab);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const resetConversationState = useWorkspaceStore(
@@ -45,6 +48,11 @@ export function WorkspacePanel({
   const [terminalMounted, setTerminalMounted] = useState(
     panelOpen && activeTab === "terminal",
   );
+  const problemCount = useProblemsStore(
+    (s) => s.data[conversationId ?? ""]?.error_count ?? 0,
+  );
+  const clearProblems = useProblemsStore((s) => s.clear);
+  const loadProblems = useProblemsStore((s) => s.load);
 
   useEffect(() => {
     if (panelOpen && activeTab === "terminal") setTerminalMounted(true);
@@ -52,10 +60,20 @@ export function WorkspacePanel({
 
   useEffect(() => {
     if (!conversationId) return;
+    const controller = new AbortController();
+    void loadProblems(conversationId, controller.signal);
+    return () => controller.abort();
+  }, [conversationId, filesVersion, loadProblems]);
+
+  useEffect(() => {
+    if (!conversationId) return;
     if (previousConversationIdRef.current === conversationId) return;
+    if (previousConversationIdRef.current) {
+      clearProblems(previousConversationIdRef.current);
+    }
     previousConversationIdRef.current = conversationId;
     resetConversationState();
-  }, [conversationId, resetConversationState]);
+  }, [clearProblems, conversationId, resetConversationState]);
 
   const onPointerDown = useCallback(
     (event: React.PointerEvent) => {
@@ -116,7 +134,11 @@ export function WorkspacePanel({
         )}
       />
       <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-rule bg-paper overflow-hidden">
-        <WorkspaceTabs active={activeTab} onChange={setActiveTab} />
+        <WorkspaceTabs
+          active={activeTab}
+          onChange={setActiveTab}
+          problemCount={problemCount}
+        />
         {activeTab === "files" &&
           (previewPath ? (
             <FilePreview
@@ -135,6 +157,9 @@ export function WorkspacePanel({
             conversationId={conversationId}
             projectId={projectId}
           />
+        )}
+        {activeTab === "problems" && (
+          <WorkspaceProblems conversationId={conversationId} />
         )}
         {terminalMounted && (
           <div
@@ -166,13 +191,16 @@ export function WorkspacePanel({
 function WorkspaceTabs({
   active,
   onChange,
+  problemCount,
 }: {
   active: WorkspaceTab;
   onChange: (tab: WorkspaceTab) => void;
+  problemCount: number;
 }) {
   const tabs: Array<{ id: WorkspaceTab; label: string }> = [
     { id: "files", label: "Files" },
     { id: "diff", label: "Diff" },
+    { id: "problems", label: "Problems" },
     { id: "terminal", label: "Terminal" },
   ];
   return (
@@ -190,6 +218,11 @@ function WorkspaceTabs({
           )}
         >
           {tab.label}
+          {tab.id === "problems" && problemCount > 0 && (
+            <span className="ml-1 rounded-full bg-red-100 px-1 text-[9px] text-red-700">
+              {problemCount > 99 ? "99+" : problemCount}
+            </span>
+          )}
         </button>
       ))}
     </div>

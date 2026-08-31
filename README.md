@@ -38,6 +38,8 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
 - **流式与子 Agent 可观测性**：Runner 事件编码为 SSE，主回复、thinking、工具调用和
   sub-agent 内部事件按层级展示并持久化。
 - **上下文压缩**：在轮次之间把旧历史折叠成摘要；原消息不删除，UI 仍展示完整记录。
+- **结构化验证**：`run_command` 可声明 test/build/lint/typecheck/format，常见 Go、TypeScript、
+  ESLint 诊断会持久化到 Problems，并可跳转到对应文件行。
 - **原生图像理解**：默认使用 `deepseek-v4-flash-vision-exp`，用户主动附加的
   JPEG/PNG/GIF/WebP 会作为图片内容发送给 DeepSeek；关闭 `LLM_MULTIMODAL` 后改走本地 OCR。
 
@@ -64,7 +66,7 @@ create_plan       todo_write
 ### Workspace 与桌面应用
 
 - 项目或会话可以挂载独立 Workspace；所有文件工具都会做边界解析，越界读写进入审批或被拒绝。
-- 右侧 Workspace 面板提供 Files / Diff / Terminal：Files 支持 Markdown、代码、CSV、PDF、
+- 右侧 Workspace 面板提供 Files / Diff / Problems / Terminal：Files 支持 Markdown、代码、CSV、PDF、
   docx、pptx、图片和音视频只读预览；Diff 区分本轮 Agent 与全部 Git 变更；Terminal
   通过 PTY 提供以 Workspace 为 cwd 的交互式登录 shell。HTML 默认按源码展示，不在应用本源中执行。
 - Electron 开发态加载 Vite；打包态通过 `lingcowork://app` 加载包内前端，并托管

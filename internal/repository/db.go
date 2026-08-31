@@ -27,6 +27,7 @@ func NewDB(dsn string) (*gorm.DB, error) {
 		&model.WorkspaceChangeEvent{},
 		&model.WorkPlan{},
 		&model.WorkItem{},
+		&model.ValidationRun{},
 	); err != nil {
 		return nil, err
 	}

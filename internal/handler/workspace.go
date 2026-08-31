@@ -62,7 +62,25 @@ func (h *WorkspaceHandler) Register(r *gin.Engine) {
 	r.GET("/conversations/:id/workspace/inline", h.Inline)
 	r.GET("/conversations/:id/workspace/changes", h.Changes)
 	r.GET("/conversations/:id/workspace/diff", h.Diff)
+	r.GET("/conversations/:id/workspace/status", h.Status)
 	r.GET("/conversations/:id/workspace/terminal", h.Terminal)
+}
+
+func (h *WorkspaceHandler) Status(c *gin.Context) {
+	if h.diffSvc == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "workspace status unavailable"})
+		return
+	}
+	result, err := h.diffSvc.RepositoryStatus(
+		c.Request.Context(),
+		c.Param("id"),
+		c.Query("project_id"),
+	)
+	if err != nil {
+		writeWorkspaceDiffError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *WorkspaceHandler) Changes(c *gin.Context) {

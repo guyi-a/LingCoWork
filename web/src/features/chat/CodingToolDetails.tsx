@@ -1,8 +1,14 @@
 import type { ToolCall } from "@/hooks/useChatStream";
+import type { ValidationDiagnostic, ValidationSummary } from "@/lib/api";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { cn } from "@/lib/utils";
 
-const CODING_TOOL_NAMES = new Set(["glob", "grep", "apply_patch"]);
+const CODING_TOOL_NAMES = new Set([
+  "glob",
+  "grep",
+  "apply_patch",
+  "run_command",
+]);
 
 type JsonObject = Record<string, unknown>;
 
@@ -56,6 +62,14 @@ type PatchHunkDetail = {
   deletions?: number;
 };
 
+type CommandResult = {
+  exit_code?: number;
+  duration_ms?: number;
+  stdout?: string;
+  stderr?: string;
+  validation?: ValidationSummary;
+};
+
 type AnnotatedPatchLine = {
   text: string;
   kind: "add" | "delete" | "context" | "hunk" | "meta";
@@ -87,6 +101,13 @@ export function codingToolLabel(tool: ToolCall): string {
       return additions === undefined || deletions === undefined
         ? basename(path)
         : `${basename(path)} · +${additions} −${deletions}`;
+    }
+    case "run_command": {
+      const command = stringValue(args?.command);
+      const validation = validationSummary(result?.validation);
+      if (!validation) return command;
+      const label = validation.passed ? "passed" : "failed";
+      return `${validation.kind} ${label} · ${validation.error_count} errors`;
     }
     default:
       return "";
@@ -142,7 +163,104 @@ export function CodingToolDetails({ tool }: { tool: ToolCall }) {
       />
     );
   }
+  if (tool.name === "run_command") {
+    return (
+      <CommandDetails
+        args={args}
+        result={result as CommandResult | null}
+      />
+    );
+  }
   return null;
+}
+
+function CommandDetails({
+  args,
+  result,
+}: {
+  args: JsonObject | null;
+  result: CommandResult | null;
+}) {
+  const openFile = useWorkspaceStore((s) => s.openFile);
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
+  const setPanelOpen = useWorkspaceStore((s) => s.setPanelOpen);
+  const validation = validationSummary(result?.validation);
+  const diagnostics = validation?.diagnostics ?? [];
+  const output = stringValue(result?.stderr) || stringValue(result?.stdout);
+
+  return (
+    <div className="space-y-2">
+      <QueryLine label="Command" value={stringValue(args?.command)} />
+      {validation && (
+        <>
+          <div className="flex items-center gap-2 text-[11px]">
+            <span
+              className={cn(
+                "font-medium",
+                validation.passed ? "text-emerald-600" : "text-red-600",
+              )}
+            >
+              {validation.kind} {validation.passed ? "passed" : "failed"}
+            </span>
+            <span className="text-muted">
+              {validation.error_count} errors · {validation.warning_count} warnings
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setPanelOpen(true);
+                setActiveTab("problems");
+              }}
+              className="ml-auto text-accent hover:underline"
+            >
+              View Problems
+            </button>
+          </div>
+          {diagnostics.length > 0 && (
+            <div className="divide-y divide-rule/60 rounded-md border border-rule/70">
+              {diagnostics.slice(0, 5).map((diagnostic) => (
+                <button
+                  key={diagnostic.id}
+                  type="button"
+                  disabled={!diagnostic.path}
+                  onClick={() =>
+                    diagnostic.path &&
+                    openFile(diagnostic.path, diagnostic.line)
+                  }
+                  className={cn(
+                    "block w-full px-2 py-1.5 text-left text-[10px]",
+                    diagnostic.path && "hover:bg-subtle",
+                  )}
+                >
+                  <span className="block truncate text-ink">
+                    {diagnostic.message}
+                  </span>
+                  {diagnostic.path && (
+                    <span className="block truncate font-mono text-muted">
+                      {diagnostic.path}
+                      {diagnostic.line ? `:${diagnostic.line}` : ""}
+                      {diagnostic.column ? `:${diagnostic.column}` : ""}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {!validation.parse_ok && (
+            <p className="text-[10px] text-amber-700">
+              未能结构化解析完整输出，以下为原始日志。
+            </p>
+          )}
+        </>
+      )}
+      {(!validation || !validation.parse_ok) && output && (
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-rule/70 bg-subtle/35 p-2 text-[10px] leading-4 text-ink/80">
+          {output.slice(0, 4000)}
+        </pre>
+      )}
+      <ResultMeta durationMs={numberValue(result?.duration_ms)} />
+    </div>
+  );
 }
 
 function GlobDetails({
@@ -440,6 +558,38 @@ function parseObject(value: string | undefined): JsonObject | null {
   } catch {
     return null;
   }
+}
+
+function validationSummary(value: unknown): ValidationSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.kind !== "string" ||
+    typeof raw.passed !== "boolean" ||
+    typeof raw.parse_ok !== "boolean"
+  ) {
+    return null;
+  }
+  const diagnostics = Array.isArray(raw.diagnostics)
+    ? raw.diagnostics.filter(
+        (item): item is ValidationDiagnostic =>
+          !!item &&
+          typeof item === "object" &&
+          !Array.isArray(item) &&
+          typeof (item as { id?: unknown }).id === "string" &&
+          typeof (item as { message?: unknown }).message === "string",
+      )
+    : [];
+  return {
+    kind: raw.kind as ValidationSummary["kind"],
+    passed: raw.passed,
+    parser: stringValue(raw.parser),
+    parse_ok: raw.parse_ok,
+    diagnostics,
+    error_count: numberValue(raw.error_count) ?? 0,
+    warning_count: numberValue(raw.warning_count) ?? 0,
+    truncated: raw.truncated === true,
+  };
 }
 
 function stringValue(value: unknown): string {

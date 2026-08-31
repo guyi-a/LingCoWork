@@ -565,7 +565,10 @@ async function runSSELoop(
               content: f.ok ? f.content : undefined,
               error: f.ok ? undefined : f.error ?? f.message,
             });
-            if (status === "ok" && mayAffectWorkspace(f.name)) {
+            if (
+              (status === "ok" && mayAffectWorkspace(f.name)) ||
+              f.name === "run_command"
+            ) {
               onWorkspaceChanged?.();
             }
           }

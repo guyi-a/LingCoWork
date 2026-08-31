@@ -99,6 +99,54 @@ func Head(ctx context.Context, workspace string) (string, bool, error) {
 	return strings.TrimSpace(string(stdout)), true, nil
 }
 
+func Branch(ctx context.Context, workspace string) (name string, detached bool, err error) {
+	root, err := RepositoryRoot(ctx, workspace)
+	if err != nil {
+		return "", false, err
+	}
+	stdout, _, branchErr := Run(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if branchErr == nil {
+		return strings.TrimSpace(string(stdout)), false, nil
+	}
+	stdout, stderr, err := Run(ctx, root, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return "", false, fmt.Errorf("git branch: %w: %s", err, strings.TrimSpace(string(stderr)))
+	}
+	return strings.TrimSpace(string(stdout)), true, nil
+}
+
+func AheadBehind(
+	ctx context.Context,
+	workspace string,
+) (ahead, behind int, hasUpstream bool, err error) {
+	root, err := RepositoryRoot(ctx, workspace)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if _, _, err := Run(
+		ctx, root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}",
+	); err != nil {
+		return 0, 0, false, nil
+	}
+	stdout, stderr, err := Run(
+		ctx, root, "rev-list", "--left-right", "--count", "HEAD...@{upstream}",
+	)
+	if err != nil {
+		return 0, 0, true, fmt.Errorf("git ahead/behind: %w: %s", err, strings.TrimSpace(string(stderr)))
+	}
+	fields := strings.Fields(string(stdout))
+	if len(fields) != 2 {
+		return 0, 0, true, fmt.Errorf("unexpected git ahead/behind output %q", stdout)
+	}
+	if _, err := fmt.Sscan(fields[0], &ahead); err != nil {
+		return 0, 0, true, err
+	}
+	if _, err := fmt.Sscan(fields[1], &behind); err != nil {
+		return 0, 0, true, err
+	}
+	return ahead, behind, true, nil
+}
+
 func NumStat(ctx context.Context, workspace string) ([]NumStatEntry, error) {
 	root, err := RepositoryRoot(ctx, workspace)
 	if err != nil {

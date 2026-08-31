@@ -36,6 +36,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/service"
 	"github.com/guyi-a/Interview-Agent/internal/skillhub"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
+	"github.com/guyi-a/Interview-Agent/internal/validation"
 	"github.com/guyi-a/Interview-Agent/internal/websearch"
 	"github.com/guyi-a/Interview-Agent/internal/workplan"
 )
@@ -129,6 +130,10 @@ func main() {
 	compactionRepo := repository.NewCompactionRepo(db)
 	workPlanRepo := repository.NewWorkPlanRepo(db)
 	workPlanService := workplan.NewService(workPlanRepo)
+	validationRepo := repository.NewValidationRepo(db)
+	validationService := validation.NewService(
+		validationRepo, msgRepo, convRepo, projectRepo,
+	)
 	compactor := compaction.New(compactionRepo, cfg.Compaction)
 	// Zero means "no fold coming", which the UI reads as: show the raw token
 	// count with no denominator instead of a progress readout toward a
@@ -234,7 +239,7 @@ func main() {
 		projectRepo,
 		effects,
 	)
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker, workPlanService)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker, workPlanService, validationService)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -265,6 +270,7 @@ func main() {
 	convHandler := handler.NewConversationHandler(convService, contextLimit)
 	projectHandler := handler.NewProjectHandler(projectService)
 	workspaceHandler := handler.NewWorkspaceHandler(workspaceService, workspaceDiffService)
+	problemsHandler := handler.NewProblemsHandler(validationService)
 	mcpHandler := handler.NewMCPHandler(mcpMgr)
 	skillHubHandler := handler.NewSkillHubHandler(skillHubSvc, skillHubCats)
 	instructionHandler := handler.NewInstructionHandler(instructionStore)
@@ -279,6 +285,7 @@ func main() {
 	convHandler.Register(r)
 	projectHandler.Register(r)
 	workspaceHandler.Register(r)
+	problemsHandler.Register(r)
 	mcpHandler.Register(r)
 	skillHubHandler.Register(r)
 	instructionHandler.Register(r)

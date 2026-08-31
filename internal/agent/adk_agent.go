@@ -20,6 +20,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/memory"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
+	"github.com/guyi-a/Interview-Agent/internal/validation"
 	"github.com/guyi-a/Interview-Agent/internal/workplan"
 )
 
@@ -85,6 +86,7 @@ func NewInterviewADKAgent(
 	userMemoryPath string,
 	changeTracker *changes.Tracker,
 	workPlans *workplan.Service,
+	validations *validation.Service,
 ) (*ADKBundle, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("ToolCallingChatModel is nil")
@@ -114,6 +116,9 @@ func NewInterviewADKAgent(
 		toolerr.Middleware(),
 		planGuard(convRepo),
 		approvalMW,
+	}
+	if validations != nil {
+		toolMiddlewares = append(toolMiddlewares, validations.Middleware())
 	}
 	if changeTracker != nil {
 		toolMiddlewares = append(toolMiddlewares, changeTracker.Middleware())

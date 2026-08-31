@@ -43,6 +43,15 @@ func TestWorkspaceDiffServiceGitAllAndAgentScopes(t *testing.T) {
 	writeWorkspaceDiffFixture(t, root, "main.go", "package main\n\nconst value = 2\n")
 	writeWorkspaceDiffFixture(t, root, "new.txt", "new\n")
 
+	status, err := diffSvc.RepositoryStatus(ctx, "conversation", "project")
+	if err != nil {
+		t.Fatalf("repository status: %v", err)
+	}
+	if !status.GitRepository || !status.Dirty || status.ChangedFiles != 2 ||
+		status.Unstaged != 1 || status.Untracked != 1 || status.Branch == "" {
+		t.Fatalf("repository status = %#v", status)
+	}
+
 	all, err := diffSvc.Changes(ctx, "conversation", "project", "all")
 	if err != nil {
 		t.Fatalf("all changes: %v", err)

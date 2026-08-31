@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 
 	"github.com/guyi-a/Interview-Agent/internal/agent/scope"
+	"github.com/guyi-a/Interview-Agent/internal/validation"
 )
 
 const (
@@ -28,13 +29,14 @@ const (
 )
 
 type RunCommandInput struct {
-	Command string `json:"command" jsonschema:"description=Full shell command line executed via /bin/sh -c. Supports pipes / redirects / subshells / env-var prefixes (LANG=... foo). Non-empty."`
-	Cwd     string `json:"cwd" jsonschema:"description=Working directory. Workspace-relative path or an absolute path INSIDE the workspace. Absolute paths outside the workspace are rejected — this tool runs code and must not roam. Default: workspace root."`
-	Timeout int    `json:"timeout" jsonschema:"description=Timeout in seconds. Default 60. Values above 300 are clamped down to 300. On timeout the entire process group is killed (SIGKILL)."`
+	Command        string `json:"command" jsonschema:"description=Full shell command line executed via /bin/sh -c. Supports pipes / redirects / subshells / env-var prefixes (LANG=... foo). Non-empty."`
+	Cwd            string `json:"cwd" jsonschema:"description=Working directory. Workspace-relative path or an absolute path INSIDE the workspace. Absolute paths outside the workspace are rejected — this tool runs code and must not roam. Default: workspace root."`
+	Timeout        int    `json:"timeout" jsonschema:"description=Timeout in seconds. Default 60. Values above 300 are clamped down to 300. On timeout the entire process group is killed (SIGKILL)."`
+	ValidationKind string `json:"validation_kind,omitempty" jsonschema:"description=Optional structured validation intent. One of test / build / lint / typecheck / format. Omit for ordinary commands."`
 }
 
 type RunCommandOutput struct {
-	ExitCode        int    `json:"exit_code"`         // -1 when the process group was killed by our timeout
+	ExitCode        int    `json:"exit_code"` // -1 when the process group was killed by our timeout
 	DurationMs      int64  `json:"duration_ms"`
 	Stdout          string `json:"stdout"`
 	Stderr          string `json:"stderr"`
@@ -49,6 +51,9 @@ func newRunCommandTool(d *fsDeps) (tool.BaseTool, error) {
 		command := strings.TrimSpace(in.Command)
 		if command == "" {
 			return nil, fmt.Errorf("command is required")
+		}
+		if err := validation.ValidateKind(in.ValidationKind); err != nil {
+			return nil, err
 		}
 
 		// cwd 一律要求 workspace 内 —— 执行命令不同于读文件，绝对路径逃逸的

@@ -11,6 +11,8 @@ export type ToolActivity = {
   searches: number;
   additions: number;
   deletions: number;
+  validations: number;
+  validationErrors: number;
 };
 
 export type ToolActivityRow =
@@ -70,6 +72,8 @@ export function projectActivity(
   let searches = 0;
   let additions = 0;
   let deletions = 0;
+  let validations = 0;
+  let validationErrors = 0;
 
   for (const tool of tools) {
     const args = parseObject(tool.argsJson);
@@ -87,6 +91,12 @@ export function projectActivity(
       addString(filePaths, argumentPath || result?.path);
       additions += numberValue(result?.additions) ?? 0;
       deletions += numberValue(result?.deletions) ?? 0;
+    } else if (kind === "commands") {
+      const validation = parseObject(result?.validation);
+      if (validation) {
+        validations++;
+        validationErrors += numberValue(validation.error_count) ?? 0;
+      }
     }
   }
 
@@ -95,11 +105,20 @@ export function projectActivity(
     kind,
     tools,
     status: aggregateActivityStatus(tools),
-    label: activityLabel(kind, tools.length, files.length, searches),
+    label: activityLabel(
+      kind,
+      tools.length,
+      files.length,
+      searches,
+      validations,
+      validationErrors,
+    ),
     files,
     searches,
     additions,
     deletions,
+    validations,
+    validationErrors,
   };
 }
 
@@ -129,6 +148,8 @@ function activityLabel(
   toolCount: number,
   fileCount: number,
   searches: number,
+  validations: number,
+  validationErrors: number,
 ): string {
   switch (kind) {
     case "explore": {
@@ -142,14 +163,24 @@ function activityLabel(
       return `Changed ${count} ${plural(count, "file", "files")}`;
     }
     case "commands":
+      if (validations > 0) {
+        if (validationErrors > 0) {
+          return `${validations} ${plural(validations, "validation", "validations")} · ${validationErrors} ${plural(validationErrors, "error", "errors")}`;
+        }
+        return `${validations} ${plural(validations, "validation", "validations")} passed`;
+      }
       return `Ran ${toolCount} ${plural(toolCount, "command", "commands")}`;
     case "rag":
       return `Searched knowledge base ${toolCount} ${plural(toolCount, "time", "times")}`;
   }
 }
 
-function parseObject(value: string | undefined): Record<string, unknown> | null {
+function parseObject(value: unknown): Record<string, unknown> | null {
   if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return null;
   try {
     const parsed = JSON.parse(value) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)

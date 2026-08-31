@@ -1006,6 +1006,71 @@ export type WorkspaceChanges = {
   truncated?: boolean;
 };
 
+export type WorkspaceRepositoryStatus = {
+  workspace: WorkspaceMeta;
+  root: string;
+  git_repository: boolean;
+  branch?: string;
+  detached?: boolean;
+  dirty: boolean;
+  changed_files: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  ahead: number;
+  behind: number;
+  has_upstream: boolean;
+};
+
+export type ValidationKind =
+  | "test"
+  | "build"
+  | "lint"
+  | "typecheck"
+  | "format";
+
+export type ValidationDiagnostic = {
+  id: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+  path?: string;
+  line?: number;
+  column?: number;
+  code?: string;
+  source?: string;
+};
+
+export type ValidationSummary = {
+  kind: ValidationKind;
+  passed: boolean;
+  parser: string;
+  parse_ok: boolean;
+  diagnostics?: ValidationDiagnostic[];
+  error_count: number;
+  warning_count: number;
+  truncated?: boolean;
+};
+
+export type ValidationRun = {
+  tool_call_id: string;
+  user_message_seq: number;
+  command: string;
+  cwd: string;
+  exit_code: number;
+  duration_ms: number;
+  timed_out?: boolean;
+  validation: ValidationSummary;
+  created_at: string;
+};
+
+export type WorkspaceProblems = {
+  scope: "current" | "conversation";
+  user_message_seq?: number;
+  runs: ValidationRun[];
+  error_count: number;
+  warning_count: number;
+};
+
 export type WorkspaceDiff = WorkspaceChangedFile & {
   scope: WorkspaceChangeScope;
   user_message_seq?: number;
@@ -1026,6 +1091,36 @@ export async function fetchWorkspaceTree(
     { signal },
   );
   if (!res.ok) throw new Error(`fetchWorkspaceTree: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWorkspaceStatus(
+  conversationId: string,
+  opts?: { projectId?: string },
+  signal?: AbortSignal,
+): Promise<WorkspaceRepositoryStatus> {
+  const params = new URLSearchParams();
+  if (opts?.projectId) params.set("project_id", opts.projectId);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/status${query}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`fetchWorkspaceStatus: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWorkspaceProblems(
+  conversationId: string,
+  scope: "current" | "conversation",
+  signal?: AbortSignal,
+): Promise<WorkspaceProblems> {
+  const params = new URLSearchParams({ scope });
+  const res = await fetch(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/workspace/problems?${params.toString()}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`fetchWorkspaceProblems: ${res.status}`);
   return res.json();
 }
 

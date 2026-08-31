@@ -74,6 +74,79 @@ type WorkspaceDiffResult struct {
 	Truncated      bool   `json:"truncated,omitempty"`
 }
 
+type WorkspaceRepositoryStatus struct {
+	Workspace     WorkspaceMeta `json:"workspace"`
+	Root          string        `json:"root"`
+	GitRepository bool          `json:"git_repository"`
+	Branch        string        `json:"branch,omitempty"`
+	Detached      bool          `json:"detached,omitempty"`
+	Dirty         bool          `json:"dirty"`
+	ChangedFiles  int           `json:"changed_files"`
+	Staged        int           `json:"staged"`
+	Unstaged      int           `json:"unstaged"`
+	Untracked     int           `json:"untracked"`
+	Ahead         int           `json:"ahead"`
+	Behind        int           `json:"behind"`
+	HasUpstream   bool          `json:"has_upstream"`
+}
+
+func (s *WorkspaceDiffService) RepositoryStatus(
+	ctx context.Context,
+	conversationID, projectID string,
+) (*WorkspaceRepositoryStatus, error) {
+	root, resolvedProjectID, err := s.workspace.Root(ctx, conversationID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	root, err = filepath.EvalSymlinks(filepath.Clean(root))
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace: %w", err)
+	}
+	result := &WorkspaceRepositoryStatus{
+		Workspace: WorkspaceMeta{
+			ProjectID: resolvedProjectID,
+			RootName:  filepath.Base(root),
+		},
+		Root: root,
+	}
+	if _, err := workspacegit.RepositoryRoot(ctx, root); err != nil {
+		if errors.Is(err, workspacegit.ErrNotRepository) ||
+			errors.Is(err, workspacegit.ErrNotRepositoryRoot) {
+			return result, nil
+		}
+		return nil, err
+	}
+	result.GitRepository = true
+	result.Branch, result.Detached, err = workspacegit.Branch(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	status, err := workspacegit.Status(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	result.ChangedFiles = len(status)
+	result.Dirty = len(status) > 0
+	for _, entry := range status {
+		if entry.IndexStatus == '?' && entry.WorkStatus == '?' {
+			result.Untracked++
+			continue
+		}
+		if entry.IndexStatus != ' ' && entry.IndexStatus != '?' {
+			result.Staged++
+		}
+		if entry.WorkStatus != ' ' && entry.WorkStatus != '?' {
+			result.Unstaged++
+		}
+	}
+	result.Ahead, result.Behind, result.HasUpstream, err =
+		workspacegit.AheadBehind(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *WorkspaceDiffService) Changes(
 	ctx context.Context,
 	conversationID, projectID, changeScope string,
