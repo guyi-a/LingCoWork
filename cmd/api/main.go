@@ -247,8 +247,10 @@ func main() {
 	manager := stream.NewManager()
 	instructionStore := instructions.NewStore(instructionRoot)
 	pendingApprovals := approval.NewPendingStore(pendingApprovalRepo)
-	if rows, err := pendingApprovalRepo.ListAll(ctx); err != nil {
-		log.Printf("restore pending approvals: %v", err)
+	if rows, err := service.ReconcileChatState(
+		ctx, convRepo, msgRepo, pendingApprovalRepo, checkpointRepo,
+	); err != nil {
+		log.Printf("reconcile chat state: %v", err)
 	} else {
 		pendingApprovals.Restore(rows)
 		log.Printf("restored %d pending approval(s) from DB", len(rows))

@@ -102,6 +102,21 @@ func (r *ConversationRepo) List(ctx context.Context, limit int) ([]model.Convers
 	return out, nil
 }
 
+func (r *ConversationRepo) ListByAgentStatuses(
+	ctx context.Context,
+	statuses ...string,
+) ([]model.Conversation, error) {
+	if len(statuses) == 0 {
+		return []model.Conversation{}, nil
+	}
+	var out []model.Conversation
+	err := r.db.WithContext(ctx).
+		Where("agent_status IN ?", statuses).
+		Order("updated_at ASC").
+		Find(&out).Error
+	return out, err
+}
+
 func (r *ConversationRepo) Delete(ctx context.Context, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("conversation_id = ?", id).Delete(&model.Message{}).Error; err != nil {
