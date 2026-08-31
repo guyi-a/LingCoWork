@@ -37,6 +37,8 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
   pending approval 和 checkpoint 会落库，页面刷新或进程重启后仍可恢复。
 - **流式与子 Agent 可观测性**：Runner 事件编码为 SSE，主回复、thinking、工具调用和
   sub-agent 内部事件按层级展示并持久化。
+- **消息级增量持久化**：完整 assistant/tool 消息在边界立即幂等落库；Buffer 只保留尚未
+  持久化的实时增量，取消或重启最多损失当前未完成边界，不丢整轮已完成步骤。
 - **上下文压缩**：在轮次之间把旧历史折叠成摘要；原消息不删除，UI 仍展示完整记录。
 - **结构化验证**：`run_command` 可声明 test/build/lint/typecheck/format，常见 Go、TypeScript、
   ESLint 诊断会持久化到 Problems，并可跳转到对应文件行。

@@ -52,16 +52,40 @@ func (b *StreamBuffer) Append(chunk []byte) {
 		return
 	}
 	b.chunks = append(b.chunks, cp)
-	subs := make([]chan []byte, len(b.subscribers))
-	copy(subs, b.subscribers)
-	b.mu.Unlock()
-
-	for _, ch := range subs {
+	for _, ch := range b.subscribers {
 		select {
 		case ch <- cp:
 		default:
 		}
 	}
+	b.mu.Unlock()
+}
+
+// PublishLive sends a durable event to current subscribers without retaining
+// it for reconnect replay. A reconnect loads completed message boundaries
+// from the DB first, so replaying this event would duplicate them.
+func (b *StreamBuffer) PublishLive(chunk []byte) {
+	cp := append([]byte(nil), chunk...)
+	b.mu.RLock()
+	if b.status != StatusStreaming {
+		b.mu.RUnlock()
+		return
+	}
+	for _, ch := range b.subscribers {
+		select {
+		case ch <- cp:
+		default:
+		}
+	}
+	b.mu.RUnlock()
+}
+
+// ClearReplay drops already-durable history without affecting connected
+// subscribers. Only unfinished assistant deltas remain replayable.
+func (b *StreamBuffer) ClearReplay() {
+	b.mu.Lock()
+	b.chunks = nil
+	b.mu.Unlock()
 }
 
 func (b *StreamBuffer) Finish() {

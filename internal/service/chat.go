@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
 	"github.com/guyi-a/Interview-Agent/internal/agent/contextkey"
 	"github.com/guyi-a/Interview-Agent/internal/agent/multimodal"
@@ -426,6 +427,7 @@ func (s *ChatService) runAgent(ctx context.Context, convID string, msgs []*schem
 	ctx = toolerr.WithRegistry(ctx, toolerr.NewRegistry())
 
 	collector := stream.NewRunCollector()
+	journal := newMessageJournal(s.msgRepo, convID, uuid.NewString())
 	sink := s.approvalSink(convID)
 
 	_ = s.convRepo.SetAgentStatus(context.Background(), convID, "running")
@@ -434,7 +436,7 @@ func (s *ChatService) runAgent(ctx context.Context, convID string, msgs []*schem
 	// enforced by manager.Create above, so reusing convID as the eino
 	// checkpoint id keeps resume lookups trivial.
 	iter := s.runner.Run(ctx, msgs, adk.WithCheckPointID(convID))
-	s.consumeAndPersist(ctx, convID, iter, sink, buf, collector, nil)
+	s.consumeAndPersist(ctx, convID, iter, sink, buf, collector, journal, nil)
 }
 
 // resumeAgent 恢复被中断的 run。targets 一次携带同一 checkpoint 的全部
@@ -450,6 +452,7 @@ func (s *ChatService) resumeAgent(
 	ctx = toolerr.WithRegistry(ctx, toolerr.NewRegistry())
 
 	collector := stream.NewRunCollector()
+	journal := newMessageJournal(s.msgRepo, convID, uuid.NewString())
 	sink := s.approvalSink(convID)
 
 	_ = s.convRepo.SetAgentStatus(context.Background(), convID, "running")
@@ -474,7 +477,7 @@ func (s *ChatService) resumeAgent(
 		stream.FinalizeErr(buf, err)
 		return
 	}
-	s.consumeAndPersist(ctx, convID, iter, sink, buf, collector, initialRouter)
+	s.consumeAndPersist(ctx, convID, iter, sink, buf, collector, journal, initialRouter)
 }
 
 // rebuildOpenToolCalls walks the conversation's persisted messages and
@@ -551,202 +554,100 @@ func (s *ChatService) consumeAndPersist(
 	sink stream.InterruptSink,
 	buf *stream.StreamBuffer,
 	collector *stream.RunCollector,
+	journal stream.MessageJournal,
 	initialRouterState map[string]string,
 ) {
-	if err := stream.ConsumeADKEvents(ctx, iter, s.rootName, convID, sink, buf, collector, initialRouterState); err != nil {
+	if err := stream.ConsumeADKEvents(ctx, iter, s.rootName, convID, sink, buf, collector, journal, initialRouterState); err != nil {
 		log.Printf("adk runner error: %v", err)
-		if perr := s.persistRun(convID, collector, false); perr != nil {
-			log.Printf("persist run (on error path): %v", perr)
+		if perr := s.persistInterruptState(convID, collector, journal, err); perr != nil {
+			log.Printf("persist interrupt state: %v", perr)
 		}
+		s.updateJournalMetadata(convID, collector, journal)
 		s.finalizeStatus(convID)
 		stream.FinalizeErr(buf, err)
 		return
 	}
 
 	interrupted := s.pending.HasPending(convID)
-	if err := s.persistRun(convID, collector, interrupted); err != nil {
-		log.Printf("persist run: %v", err)
+	if !interrupted {
+		if err := s.persistInterruptState(convID, collector, journal, nil); err != nil {
+			log.Printf("persist trailing state: %v", err)
+		}
 	}
+	s.updateJournalMetadata(convID, collector, journal)
 	_ = s.convRepo.Upsert(context.Background(), convID)
 	s.finalizeStatus(convID)
 	stream.FinalizeOK(buf)
+}
+
+func (s *ChatService) updateJournalMetadata(
+	convID string,
+	collector *stream.RunCollector,
+	journal stream.MessageJournal,
+) {
+	if journal == nil || collector == nil {
+		return
+	}
+	extra := ""
+	if subEvents := collector.SubEvents(); len(subEvents) > 0 {
+		if data, err := json.Marshal(map[string]any{"sub_events": subEvents}); err == nil {
+			extra = string(data)
+		}
+	}
+	if err := journal.UpdateLastAssistant(
+		context.Background(), collector.TotalTokens(), extra,
+	); err != nil {
+		log.Printf("update journal metadata (conv=%s): %v", convID, err)
+	}
+}
+
+func (s *ChatService) persistInterruptState(
+	convID string,
+	collector *stream.RunCollector,
+	journal stream.MessageJournal,
+	runErr error,
+) error {
+	if journal == nil || collector == nil {
+		return nil
+	}
+	if err := journal.AppendPartialAssistant(
+		context.Background(), collector.Content(), collector.Reasoning(),
+	); err != nil {
+		return err
+	}
+	pendingCalls := make(map[string]struct{})
+	for _, item := range s.pending.List(convID) {
+		if item.CallID != "" {
+			pendingCalls[item.CallID] = struct{}{}
+		}
+	}
+	open, err := s.msgRepo.OpenToolCalls(context.Background(), convID)
+	if err != nil {
+		return err
+	}
+	reason := "interrupted"
+	if runErr != nil {
+		reason = runErr.Error()
+	}
+	for _, call := range open {
+		if _, waiting := pendingCalls[call.ID]; waiting {
+			continue
+		}
+		if err := journal.AppendToolResult(context.Background(), stream.ToolResultRecord{
+			CallID: call.ID, Name: call.Name, OK: false,
+			Content: stream.CanceledPlaceholderPrefix + " tool did not run",
+			Error:   reason, Cancelled: true,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finalizeStatus 设定会话状态：无 pending → idle；有 pending 按队首 kind 区
 // 分 waiting_approval / waiting_user。iterator 因中断自然结束时也走这里。
 func (s *ChatService) finalizeStatus(convID string) {
 	s.applyWaitingStatus(convID, "idle")
-}
-
-// persistRun serialises one completed run into raw per-message rows:
-//
-//	assistant (with ToolCalls JSON) → tool row × N → next assistant → ...
-//
-// Each turn's assistant ToolCalls are paired with their tool_result rows in
-// the SAME batch, ensuring Claude's strict tool_use ↔ tool_result pairing
-// survives on the next replay. If a turn is missing a tool_result (cancel /
-// crash / early stream close), a placeholder "[canceled] tool did not run"
-// row is inserted so the pairing stays intact.
-//
-// The entire batch is inserted in a single DB transaction via AppendMany;
-// on failure nothing is committed, avoiding partial "half turn" state.
-//
-// Dual-write for UI compatibility: the last assistant row also carries a
-// legacy Extra JSON blob (`tools[]` + `sub_events[]`) matching the pre-fix
-// wire format, so the frontend's tool-card and sub-agent rendering paths
-// keep working while the handler-side fold logic (see handler.fromModelMessage)
-// is being validated.
-func (s *ChatService) persistRun(convID string, collector *stream.RunCollector, skipMissingToolPadding bool) error {
-	turns := collector.Turns()
-	if len(turns) == 0 {
-		// Nothing captured (e.g. an early ADK error before any event). Nothing
-		// to persist — matches previous behaviour.
-		return nil
-	}
-	subEvents := collector.SubEvents()
-	legacyTools := collector.Tools()
-
-	rows := make([]*model.Message, 0, 2*len(turns))
-	// Extra dual-write lands on the last turn that actually emits an
-	// assistant row (skip empty placeholder turns synthesized on resume).
-	lastAssistantEmit := -1
-	for i, t := range turns {
-		if t.Assistant.Content != "" || t.Assistant.ReasoningContent != "" || len(t.Assistant.ToolCalls) > 0 {
-			lastAssistantEmit = i
-		}
-	}
-
-	for i, t := range turns {
-		padded := t
-		if !skipMissingToolPadding {
-			padded = padMissingToolResults(t)
-		}
-
-		hasAssistant := padded.Assistant.Content != "" ||
-			padded.Assistant.ReasoningContent != "" ||
-			len(padded.Assistant.ToolCalls) > 0
-
-		// Resume after HITL often delivers tool_result before any new
-		// OpenTurn. AttachToolResult then synthesizes an empty TurnRecord
-		// so the result isn't dropped. Emitting that empty assistant into
-		// the DB would sit BETWEEN a prior run's tool_calls and this run's
-		// tool row, which DeepSeek/OpenAI reject (400: tool_calls must be
-		// followed by tool messages). Persist tool rows only in that case.
-		if hasAssistant {
-			assistantRow := &model.Message{
-				ConversationID:   convID,
-				Role:             string(schema.Assistant),
-				Content:          padded.Assistant.Content,
-				ReasoningContent: padded.Assistant.ReasoningContent,
-			}
-			if len(padded.Assistant.ToolCalls) > 0 {
-				if b, err := json.Marshal(padded.Assistant.ToolCalls); err == nil {
-					assistantRow.ToolCalls = string(b)
-				} else {
-					log.Printf("marshal ToolCalls (convID=%s): %v", convID, err)
-				}
-			}
-			if i == lastAssistantEmit {
-				// Anchor the compaction estimator on the provider's own·
-				// count for the whole run rather than re-deriving it from
-				// characters. Only the final row gets it: the intermediate
-				// ReAct turns are prefixes of this same context.
-				assistantRow.TotalTokens = collector.TotalTokens()
-				payload := map[string]any{}
-				if len(legacyTools) > 0 {
-					payload["tools"] = legacyTools
-				}
-				if len(subEvents) > 0 {
-					payload["sub_events"] = subEvents
-				}
-				if len(payload) > 0 {
-					if data, jerr := json.Marshal(payload); jerr == nil {
-						assistantRow.Extra = string(data)
-					} else {
-						log.Printf("marshal extra (convID=%s): %v", convID, jerr)
-					}
-				}
-			}
-			rows = append(rows, assistantRow)
-		}
-
-		for _, tr := range padded.ToolResults {
-			// tool row Content is what the LLM sees on next replay — it must
-			// carry enough info for the model to react (success text or error
-			// description). We fold Error into Content for failures so the
-			// model doesn't lose the reason on replay.
-			content := tr.Content
-			if !tr.OK {
-				if content == "" {
-					content = tr.Error
-				} else if tr.Error != "" && !strings.Contains(content, tr.Error) {
-					content = content + " (" + tr.Error + ")"
-				}
-				if content == "" {
-					content = "[error] tool failed"
-				}
-			}
-			toolRow := &model.Message{
-				ConversationID: convID,
-				Role:           string(schema.Tool),
-				Content:        content,
-				ToolCallID:     tr.CallID,
-				ToolName:       tr.Name,
-			}
-			// Extra encodes ok/error/cancelled precisely for the UI fold path
-			// so the frontend can render the right card without parsing
-			// Content. Plain successes skip Extra entirely (nil ≡ ok:true
-			// default in the handler-side fold).
-			//
-			// A denial is a success that still has to be written out: it
-			// returns ok=true, so Cancelled is the only thing separating it
-			// from a normal result.
-			if !tr.OK || tr.Cancelled {
-				payload := map[string]any{"ok": tr.OK}
-				if tr.Error != "" {
-					payload["error"] = tr.Error
-				}
-				if tr.Cancelled {
-					payload["cancelled"] = true
-				}
-				if b, jerr := json.Marshal(payload); jerr == nil {
-					toolRow.Extra = string(b)
-				}
-			}
-			rows = append(rows, toolRow)
-		}
-	}
-
-	return s.msgRepo.AppendMany(context.Background(), rows)
-}
-
-// padMissingToolResults ensures every ToolCall in the turn's assistant
-// message has a matching ToolResult. Missing ones (cancel / crash mid-turn)
-// get a placeholder result so the persisted history stays a valid
-// tool_use ↔ tool_result pairing — otherwise the next replay would 400 from
-// Claude with "tool_use ids without matching tool_result".
-func padMissingToolResults(t stream.TurnRecord) stream.TurnRecord {
-	if len(t.Assistant.ToolCalls) == 0 {
-		return t
-	}
-	seen := make(map[string]bool, len(t.ToolResults))
-	for _, r := range t.ToolResults {
-		seen[r.CallID] = true
-	}
-	out := t
-	for _, tc := range t.Assistant.ToolCalls {
-		if !seen[tc.ID] {
-			out.ToolResults = append(out.ToolResults, stream.ToolResultRecord{
-				CallID:    tc.ID,
-				Name:      tc.Name,
-				OK:        false,
-				Content:   stream.CanceledPlaceholderPrefix + " tool did not run",
-				Error:     "canceled",
-				Cancelled: true,
-			})
-		}
-	}
-	return out
 }
 
 // toSchemaMessages hydrates DB rows into schema.Message with the full

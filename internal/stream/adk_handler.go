@@ -60,6 +60,7 @@ func ConsumeADKEvents(
 	sink InterruptSink,
 	buf *StreamBuffer,
 	collector *RunCollector,
+	journal MessageJournal,
 	initialRouterState map[string]string,
 ) error {
 	router := &subAgentRouter{rootName: rootName, active: map[string]string{}}
@@ -124,7 +125,7 @@ func ConsumeADKEvents(
 
 		switch {
 		case mv.IsStreaming:
-			if err := drainAssistantStream(isRoot, ev.AgentName, router, mv.MessageStream, buf, collector); err != nil {
+			if err := drainAssistantStream(ctx, isRoot, ev.AgentName, router, mv.MessageStream, buf, collector, journal); err != nil {
 				return err
 			}
 
@@ -132,7 +133,9 @@ func ConsumeADKEvents(
 			if mv.Message == nil {
 				continue
 			}
-			emitToolResult(ctx, isRoot, ev.AgentName, router, mv.ToolName, mv.Message, buf, collector)
+			if err := emitToolResult(ctx, isRoot, ev.AgentName, router, mv.ToolName, mv.Message, buf, collector, journal); err != nil {
+				return err
+			}
 
 		default:
 			// Non-streaming assistant message (EnableStreaming=false path).
@@ -141,7 +144,9 @@ func ConsumeADKEvents(
 			if mv.Message == nil {
 				continue
 			}
-			emitNonStreamAssistant(isRoot, ev.AgentName, router, mv.Message, buf, collector)
+			if err := emitNonStreamAssistant(ctx, isRoot, ev.AgentName, router, mv.Message, buf, collector, journal); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -291,12 +296,14 @@ func (r *subAgentRouter) agentFieldFor(isRoot bool, agentName string) string {
 // feed collector.subEvents instead, keeping the root message's persisted
 // content free of nested noise.
 func drainAssistantStream(
+	ctx context.Context,
 	isRoot bool,
 	agentName string,
 	router *subAgentRouter,
 	sr *schema.StreamReader[*schema.Message],
 	buf *StreamBuffer,
 	collector *RunCollector,
+	journal MessageJournal,
 ) error {
 	if sr == nil {
 		return nil
@@ -311,6 +318,11 @@ func drainAssistantStream(
 
 	var chunks []*schema.Message
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		chunk, err := sr.Recv()
 		if err != nil {
 			if isEOF(err) {
@@ -373,29 +385,52 @@ func drainAssistantStream(
 		return nil
 	}
 
+	tcs := make([]ToolCallRecord, 0, len(full.ToolCalls))
 	for _, tc := range full.ToolCalls {
-		buf.Append(Encode(Frame{
-			Type:             "tool_call",
-			Agent:            agentField,
-			ParentToolCallID: parentID,
-			ID:               tc.ID,
-			Name:             tc.Function.Name,
-			ArgsJSON:         tc.Function.Arguments,
-		}))
+		tcs = append(tcs, ToolCallRecord{
+			ID: tc.ID, Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
+		})
+	}
+	if isRoot {
+		totalTokens := 0
+		if full.ResponseMeta != nil && full.ResponseMeta.Usage != nil {
+			totalTokens = full.ResponseMeta.Usage.TotalTokens
+		}
+		record := AssistantTurnRecord{
+			Content: full.Content, ReasoningContent: full.ReasoningContent,
+			ToolCalls: tcs, TotalTokens: totalTokens,
+		}
+		if journal != nil {
+			if err := journal.AppendAssistant(ctx, record); err != nil {
+				return err
+			}
+		}
+		if collector != nil {
+			collector.OpenTurn(full.Content, full.ReasoningContent, tcs)
+		}
+		// The completed assistant is now durable. A reconnect loads it from
+		// history, so only later unfinished deltas belong in replay.
+		buf.ClearReplay()
+	}
+
+	for _, tc := range full.ToolCalls {
+		frame := Encode(Frame{
+			Type: "tool_call", Agent: agentField, ParentToolCallID: parentID,
+			ID: tc.ID, Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
+		})
+		// Tool events are id-addressed and safe to replay over DB history.
+		// Keep them until the next assistant boundary so a reconnect racing
+		// this result cannot miss it.
+		buf.Append(frame)
 		if collector != nil {
 			if isRoot {
 				collector.startTool(tc.ID, tc.Function.Name, tc.Function.Arguments)
-				// Remember which root tool_call started this sub-agent, so
-				// the sub-agent's events can attribute themselves.
 				router.noteRootToolCall(tc.Function.Name, tc.ID)
 			} else {
 				collector.AppendSubEvent(SubAgentEvent{
-					Agent:            agentName,
-					ParentToolCallID: parentID,
-					Type:             "tool_call",
-					ToolCallID:       tc.ID,
-					Name:             tc.Function.Name,
-					ArgsJSON:         tc.Function.Arguments,
+					Agent: agentName, ParentToolCallID: parentID,
+					Type: "tool_call", ToolCallID: tc.ID,
+					Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
 				})
 			}
 		}
@@ -403,32 +438,14 @@ func drainAssistantStream(
 
 	if full.ResponseMeta != nil && full.ResponseMeta.Usage != nil {
 		u := full.ResponseMeta.Usage
-		buf.Append(Encode(Frame{
-			Type:             "usage",
-			Agent:            agentField,
-			ParentToolCallID: parentID,
-			Prompt:           u.PromptTokens,
-			Reply:            u.CompletionTokens,
-			Total:            u.TotalTokens,
-		}))
+		frame := Encode(Frame{
+			Type: "usage", Agent: agentField, ParentToolCallID: parentID,
+			Prompt: u.PromptTokens, Reply: u.CompletionTokens, Total: u.TotalTokens,
+		})
+		buf.Append(frame)
 		if isRoot && collector != nil {
 			collector.SetTotalTokens(u.TotalTokens)
 		}
-	}
-
-	// Record this turn's structured shape for the service layer's raw-row
-	// persistence. Only root events flow into turns — sub-agent internal
-	// turns live in collector.subEvents instead.
-	if isRoot && collector != nil {
-		tcs := make([]ToolCallRecord, 0, len(full.ToolCalls))
-		for _, tc := range full.ToolCalls {
-			tcs = append(tcs, ToolCallRecord{
-				ID:       tc.ID,
-				Name:     tc.Function.Name,
-				ArgsJSON: tc.Function.Arguments,
-			})
-		}
-		collector.OpenTurn(full.Content, full.ReasoningContent, tcs)
 	}
 	return nil
 }
@@ -442,7 +459,8 @@ func emitToolResult(
 	msg *schema.Message,
 	buf *StreamBuffer,
 	collector *RunCollector,
-) {
+	journal MessageJournal,
+) error {
 	// Resolve the tool name with a three-tier fallback: ADK's MessageVariant
 	// → provider's msg.Name → recorded tool_call by id (some provider SDKs
 	// leave the result message's Name empty).
@@ -464,7 +482,15 @@ func emitToolResult(
 	// ok=false with the original error message so the UI shows a real
 	// failure state, even though ADK saw the rescued ToolOutput as success.
 	if errMsg, failed := toolerr.FromContext(ctx).Lookup(msg.ToolCallID); failed {
-		buf.Append(Encode(Frame{
+		record := ToolResultRecord{
+			CallID: msg.ToolCallID, Name: name, OK: false, Error: errMsg,
+		}
+		if isRoot && journal != nil {
+			if err := journal.AppendToolResult(ctx, record); err != nil {
+				return err
+			}
+		}
+		frame := Encode(Frame{
 			Type:             "tool_result",
 			Agent:            agentField,
 			ParentToolCallID: parentID,
@@ -472,16 +498,11 @@ func emitToolResult(
 			Name:             name,
 			OK:               boolPtr(false),
 			Error:            errMsg,
-		}))
+		})
+		buf.Append(frame)
 		if collector != nil {
 			if isRoot {
 				collector.finishTool(msg.ToolCallID, false, "", errMsg)
-				collector.AttachToolResult(ToolResultRecord{
-					CallID: msg.ToolCallID,
-					Name:   name,
-					OK:     false,
-					Error:  errMsg,
-				})
 				router.noteRootToolResult(msg.ToolCallID)
 			} else {
 				collector.AppendSubEvent(SubAgentEvent{
@@ -495,7 +516,12 @@ func emitToolResult(
 				})
 			}
 		}
-		return
+		if isRoot {
+			if err := flushSubEvents(ctx, collector, journal); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	// A denial comes back through this path looking like any other success:
@@ -503,7 +529,16 @@ func emitToolResult(
 	// tool. Classifying it here is what keeps the guesswork out of the UI.
 	cancelled := IsCanceledResult(msg.Content)
 
-	buf.Append(Encode(Frame{
+	record := ToolResultRecord{
+		CallID: msg.ToolCallID, Name: name, OK: true,
+		Content: msg.Content, Cancelled: cancelled,
+	}
+	if isRoot && journal != nil {
+		if err := journal.AppendToolResult(ctx, record); err != nil {
+			return err
+		}
+	}
+	frame := Encode(Frame{
 		Type:             "tool_result",
 		Agent:            agentField,
 		ParentToolCallID: parentID,
@@ -512,17 +547,11 @@ func emitToolResult(
 		OK:               boolPtr(true),
 		Content:          msg.Content,
 		Cancelled:        cancelled,
-	}))
+	})
+	buf.Append(frame)
 	if collector != nil {
 		if isRoot {
 			collector.finishTool(msg.ToolCallID, true, msg.Content, "")
-			collector.AttachToolResult(ToolResultRecord{
-				CallID:    msg.ToolCallID,
-				Name:      name,
-				OK:        true,
-				Content:   msg.Content,
-				Cancelled: cancelled,
-			})
 			router.noteRootToolResult(msg.ToolCallID)
 		} else {
 			collector.AppendSubEvent(SubAgentEvent{
@@ -536,27 +565,97 @@ func emitToolResult(
 			})
 		}
 	}
+	if isRoot {
+		if err := flushSubEvents(ctx, collector, journal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func flushSubEvents(
+	ctx context.Context,
+	collector *RunCollector,
+	journal MessageJournal,
+) error {
+	if collector == nil || journal == nil {
+		return nil
+	}
+	if !collector.SubEventsDirty() {
+		// Nothing new since the last successful flush (or no sub-agent ran) —
+		// rewriting the whole sub_events blob on every root tool result would
+		// multiply DB writes for a serially-growing array.
+		return nil
+	}
+	events := collector.SubEvents()
+	if len(events) == 0 {
+		// Defensive: dirty with nothing to write. Drop the marker so the next
+		// root tool result doesn't retry the same no-op.
+		collector.MarkSubEventsClean()
+		return nil
+	}
+	data, err := json.Marshal(map[string]any{"sub_events": events})
+	if err != nil {
+		return err
+	}
+	if err := journal.UpdateLastAssistant(ctx, 0, string(data)); err != nil {
+		return err
+	}
+	collector.MarkSubEventsClean()
+	return nil
 }
 
 func emitNonStreamAssistant(
+	ctx context.Context,
 	isRoot bool,
 	agentName string,
 	router *subAgentRouter,
 	msg *schema.Message,
 	buf *StreamBuffer,
 	collector *RunCollector,
-) {
+	journal MessageJournal,
+) error {
 	agentField := router.agentFieldFor(isRoot, agentName)
 	parentID := ""
 	if !isRoot {
 		parentID = router.parentForAgent(agentName)
 	}
+	tcs := make([]ToolCallRecord, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		tcs = append(tcs, ToolCallRecord{
+			ID: tc.ID, Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
+		})
+	}
+	if isRoot {
+		totalTokens := 0
+		if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+			totalTokens = msg.ResponseMeta.Usage.TotalTokens
+		}
+		record := AssistantTurnRecord{
+			Content: msg.Content, ReasoningContent: msg.ReasoningContent,
+			ToolCalls: tcs, TotalTokens: totalTokens,
+		}
+		if journal != nil {
+			if err := journal.AppendAssistant(ctx, record); err != nil {
+				return err
+			}
+		}
+		if collector != nil {
+			collector.OpenTurn(msg.Content, msg.ReasoningContent, tcs)
+		}
+		buf.ClearReplay()
+	}
 
 	if msg.ReasoningContent != "" {
-		buf.Append(Encode(Frame{Type: "thinking", Agent: agentField, ParentToolCallID: parentID, Content: msg.ReasoningContent}))
+		frame := Encode(Frame{Type: "thinking", Agent: agentField, ParentToolCallID: parentID, Content: msg.ReasoningContent})
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if collector != nil {
 			if isRoot {
-				collector.appendReasoning(msg.ReasoningContent)
+				// Already captured by OpenTurn above.
 			} else {
 				collector.AppendSubEvent(SubAgentEvent{
 					Agent: agentName, ParentToolCallID: parentID,
@@ -566,10 +665,15 @@ func emitNonStreamAssistant(
 		}
 	}
 	if msg.Content != "" {
-		buf.Append(Encode(Frame{Type: "text", Agent: agentField, ParentToolCallID: parentID, Content: msg.Content}))
+		frame := Encode(Frame{Type: "text", Agent: agentField, ParentToolCallID: parentID, Content: msg.Content})
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if collector != nil {
 			if isRoot {
-				collector.appendContent(msg.Content)
+				// Already captured by OpenTurn above.
 			} else {
 				collector.AppendSubEvent(SubAgentEvent{
 					Agent: agentName, ParentToolCallID: parentID,
@@ -579,14 +683,19 @@ func emitNonStreamAssistant(
 		}
 	}
 	for _, tc := range msg.ToolCalls {
-		buf.Append(Encode(Frame{
+		frame := Encode(Frame{
 			Type:             "tool_call",
 			Agent:            agentField,
 			ParentToolCallID: parentID,
 			ID:               tc.ID,
 			Name:             tc.Function.Name,
 			ArgsJSON:         tc.Function.Arguments,
-		}))
+		})
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if collector != nil {
 			if isRoot {
 				collector.startTool(tc.ID, tc.Function.Name, tc.Function.Arguments)
@@ -602,18 +711,24 @@ func emitNonStreamAssistant(
 	}
 	if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
 		u := msg.ResponseMeta.Usage
-		buf.Append(Encode(Frame{
+		frame := Encode(Frame{
 			Type:             "usage",
 			Agent:            agentField,
 			ParentToolCallID: parentID,
 			Prompt:           u.PromptTokens,
 			Reply:            u.CompletionTokens,
 			Total:            u.TotalTokens,
-		}))
+		})
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if isRoot && collector != nil {
 			collector.SetTotalTokens(u.TotalTokens)
 		}
 	}
+	return nil
 }
 
 func isEOF(err error) bool {

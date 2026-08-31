@@ -169,14 +169,17 @@ type AssistantTurnRecord struct {
 	Content          string           `json:"content,omitempty"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCallRecord `json:"tool_calls,omitempty"`
+	TotalTokens      int              `json:"total_tokens,omitempty"`
 }
 
-// TurnRecord = one assistant message + the tool results that followed it.
-// The service layer serialises these into DB rows (1 assistant + N tool) in
-// order, preserving the tool_use / tool_result pairing Claude/OpenAI require.
-type TurnRecord struct {
-	Assistant   AssistantTurnRecord `json:"assistant"`
-	ToolResults []ToolResultRecord  `json:"tool_results,omitempty"`
+// MessageJournal persists completed protocol messages while a run is still
+// active. The stream package owns the boundary types; the service layer owns
+// the database implementation.
+type MessageJournal interface {
+	AppendAssistant(ctx context.Context, record AssistantTurnRecord) error
+	AppendToolResult(ctx context.Context, record ToolResultRecord) error
+	AppendPartialAssistant(ctx context.Context, content, reasoning string) error
+	UpdateLastAssistant(ctx context.Context, totalTokens int, extra string) error
 }
 
 // ToolEventRecord is the persisted shape of one tool call within an agent run.
@@ -214,12 +217,9 @@ type SubAgentEvent struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// RunCollector accumulates the full record of a single agent run so the
-// service layer can persist it. It captures:
-//   - root agent's ChatModel content + reasoning (concatenated)
-//   - root agent's tool call / result events in order
-//   - sub-agent events kept separately so they don't pollute the root
-//     agent's final message content
+// RunCollector retains only state needed to recover the current incomplete
+// boundary plus non-model sub-agent UI events. Completed protocol messages
+// are persisted immediately by MessageJournal.
 //
 // Thread safety: a single mutex guards all fields. The internal WaitGroup
 // tracks pending OnEndWithStreamOutputFn goroutines so callers can Wait()
@@ -231,18 +231,17 @@ type RunCollector struct {
 	reasoning strings.Builder
 	tools     []ToolEventRecord
 	subEvents []SubAgentEvent
-	// turns is the turn-structured view of the same root-agent event stream.
-	// Populated by OpenTurn / AttachToolResult in parallel with the flat
-	// content/tools fields above. Used by the service layer to persist raw
-	// per-message rows (assistant + tool) so Claude's strict tool_use ↔
-	// tool_result pairing survives across conversation turns.
-	turns []TurnRecord
 	// totalTokens is the last provider-reported context size for the ROOT
 	// agent. Sub-agent usage is never recorded here — each sub-agent runs
 	// its own private context, so its totals say nothing about how full the
 	// main thread's window is. The compaction estimator uses this as its
 	// baseline, so mixing the two would badly skew the threshold.
 	totalTokens int
+	// subEventsDirty is true once AppendSubEvent has added an event that the
+	// journal has not yet flushed to the last assistant row's extra. It lets
+	// flushSubEvents skip rewriting the whole sub_events blob on every root
+	// tool result.
+	subEventsDirty bool
 }
 
 func NewRunCollector() *RunCollector {
@@ -281,15 +280,22 @@ func (c *RunCollector) TotalTokens() int {
 	return c.totalTokens
 }
 
-func (c *RunCollector) Tools() []ToolEventRecord {
+// SubEventsDirty reports whether new sub-agent events arrived since the last
+// successful flush. Callers snapshot it before flushing and must not reuse a
+// stale snapshot after another AppendSubEvent.
+func (c *RunCollector) SubEventsDirty() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.tools) == 0 {
-		return nil
-	}
-	out := make([]ToolEventRecord, len(c.tools))
-	copy(out, c.tools)
-	return out
+	return c.subEventsDirty
+}
+
+// MarkSubEventsClean clears the dirty flag after the journal durably stored
+// the current sub_events blob. SubEvents records are kept — only the "needs
+// flush" marker drops, so a later event re-arms it.
+func (c *RunCollector) MarkSubEventsClean() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.subEventsDirty = false
 }
 
 // SubEvents returns the recorded sub-agent timeline in arrival order.
@@ -339,6 +345,7 @@ func (c *RunCollector) ToolNameByID(id string) string {
 func (c *RunCollector) AppendSubEvent(ev SubAgentEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.subEventsDirty = true
 	if ev.Type == "thinking" || ev.Type == "text" {
 		if n := len(c.subEvents); n > 0 {
 			last := &c.subEvents[n-1]
@@ -372,10 +379,8 @@ func (c *RunCollector) startTool(id, name, args string) {
 	c.tools = append(c.tools, ToolEventRecord{ID: id, Name: name, ArgsJSON: args})
 }
 
-// OpenTurn records the end-of-stream state of one root-agent assistant turn.
-// Called from drainAssistantStream once the message stream has been fully
-// consumed and ConcatMessages has produced a `full` message. Subsequent
-// AttachToolResult calls will bind to this turn until the next OpenTurn.
+// OpenTurn clears the partial assistant accumulator after MessageJournal has
+// durably stored the completed message.
 func (c *RunCollector) OpenTurn(content, reasoning string, toolCalls []ToolCallRecord) {
 	// Skip empty phantom turns: some providers emit an empty streaming event
 	// after tool results just to close the loop before the next real turn.
@@ -384,51 +389,11 @@ func (c *RunCollector) OpenTurn(content, reasoning string, toolCalls []ToolCallR
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.turns = append(c.turns, TurnRecord{
-		Assistant: AssistantTurnRecord{
-			Content:          content,
-			ReasoningContent: reasoning,
-			ToolCalls:        toolCalls,
-		},
-	})
-}
-
-// AttachToolResult binds one root-agent tool result to the most recent turn.
-// Only called for events with AgentName == rootName; sub-agent tool events
-// live in subEvents instead.
-func (c *RunCollector) AttachToolResult(r ToolResultRecord) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.turns) == 0 {
-		// Defensive: tool_result arrived before any OpenTurn. ADK's event
-		// ordering shouldn't produce this, but don't drop it — synthesize a
-		// placeholder turn so the result isn't orphaned.
-		c.turns = append(c.turns, TurnRecord{})
-	}
-	last := &c.turns[len(c.turns)-1]
-	last.ToolResults = append(last.ToolResults, r)
-}
-
-// Turns returns a defensive copy of the turn-structured record. Callers may
-// mutate the returned slice freely; the collector's internal state is
-// untouched.
-func (c *RunCollector) Turns() []TurnRecord {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.turns) == 0 {
-		return nil
-	}
-	out := make([]TurnRecord, len(c.turns))
-	for i, t := range c.turns {
-		out[i] = TurnRecord{Assistant: t.Assistant}
-		if len(t.Assistant.ToolCalls) > 0 {
-			out[i].Assistant.ToolCalls = append([]ToolCallRecord(nil), t.Assistant.ToolCalls...)
-		}
-		if len(t.ToolResults) > 0 {
-			out[i].ToolResults = append([]ToolResultRecord(nil), t.ToolResults...)
-		}
-	}
-	return out
+	// content/reasoning builders now represent only the assistant message
+	// since the last durable boundary. Once OpenTurn succeeds, a later cancel
+	// must not persist the same completed text as a partial message.
+	c.content.Reset()
+	c.reasoning.Reset()
 }
 
 func (c *RunCollector) finishTool(id string, ok bool, content, errMsg string) {
@@ -442,8 +407,10 @@ func (c *RunCollector) finishTool(id string, ok bool, content, errMsg string) {
 			continue
 		}
 		c.tools[i].OK = ok
-		c.tools[i].Content = content
-		c.tools[i].Error = errMsg
+		// Full results are already durable in MessageJournal; retaining them
+		// here would duplicate large command/file outputs for the whole run.
+		_ = content
+		_ = errMsg
 		return
 	}
 }
