@@ -67,6 +67,9 @@ export function Conversation() {
   );
   const conversationsLoaded = useConversationStore((s) => s.loaded);
   const projectId = state?.projectId ?? conversationProjectId ?? undefined;
+  const projectWorkspace = useProjectStore(
+    (s) => s.items.find((item) => item.id === projectId)?.workspace,
+  );
   const cachedMode = useAgentModeStore((s) => s.modes[id]);
   const setModeLocal = useAgentModeStore((s) => s.setLocal);
   const loadMode = useAgentModeStore((s) => s.load);
@@ -140,23 +143,11 @@ export function Conversation() {
   // every flag we have reads idle. Hold it shut explicitly.
   const [resuming, setResuming] = useState(false);
 
-  // The backend run's SSE can finish while the typewriter is still revealing
-  // the tail of the last message. Keep the composer locked until that reveal
-  // completes, so the input never opens while text is still typing out.
-  const [revealing, setRevealing] = useState(false);
-  const onRevealFinished = useCallback(() => setRevealing(false), []);
-
-  // Re-arm the reveal lock as soon as a run starts streaming; it is released by
-  // AssistantTurnBody when the last message's typewriter finishes.
-  useEffect(() => {
-    if (streaming) setRevealing(true);
-  }, [streaming]);
-
   // The conversation might have a run attached on the server side. Wider than
   // `streaming`: `reconnecting` covers the mount-time probe and `resuming` the
   // post-interrupt handoff, both of which are windows where a run is live but
   // no frames have reached us yet.
-  const busy = streaming || reconnecting || resuming || revealing;
+  const busy = streaming || reconnecting || resuming;
 
   const enqueue = useQueueStore((s) => s.enqueue);
   const setQueuePaused = useQueueStore((s) => s.setPaused);
@@ -366,7 +357,6 @@ export function Conversation() {
             contextLimit={contextLimit}
             plans={planHistory}
             pendingPlanID={pendingPlan?.planId}
-            onRevealFinished={onRevealFinished}
             trailing={
               plan &&
               pendingPlan &&
@@ -393,9 +383,16 @@ export function Conversation() {
           <div className="relative">
             <PromptInput
               streaming={streaming}
-              blocked={hitlPending || revealing}
-              placeholder={revealing ? "上一条还在打字…" : undefined}
-              blockedHint={revealing ? "正在显示上一条内容" : undefined}
+              blocked={hitlPending}
+              context={
+                projectId && projectWorkspace
+                  ? {
+                      conversationId: id,
+                      projectId,
+                      workspace: projectWorkspace,
+                    }
+                  : undefined
+              }
               onSend={onSend}
               onCancel={onCancel}
               hasAttachments={attachments.length > 0}

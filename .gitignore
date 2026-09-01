@@ -61,6 +61,7 @@ data/*
 *.db-shm
 *.db-wal
 .workspace/
+.coding-eval/
 
 # Local docs
 doc/

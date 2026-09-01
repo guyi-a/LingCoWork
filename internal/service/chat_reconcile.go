@@ -84,7 +84,7 @@ func ReconcileChatState(
 			return nil, err
 		}
 		for _, call := range open {
-			if err := journal.AppendToolResult(ctx, stream.ToolResultRecord{
+			if _, _, err := journal.AppendToolResult(ctx, stream.ToolResultRecord{
 				CallID: call.ID, Name: call.Name, OK: false,
 				Content:   stream.CanceledPlaceholderPrefix + " process restarted",
 				Error:     "process restarted before the tool completed",

@@ -154,7 +154,7 @@ func TestChatStartRequiresWorkspaceBeforeCreatingConversation(t *testing.T) {
 		projectRepo: projectRepo,
 	}
 	const conversationID = "conversation-without-workspace"
-	if _, err := svc.Start(context.Background(), conversationID, "hello", "", "", ""); !errors.Is(err, ErrWorkspaceRequired) {
+	if _, err := svc.Start(context.Background(), conversationID, "hello", "", "", "", ""); !errors.Is(err, ErrWorkspaceRequired) {
 		t.Fatalf("error=%v, want ErrWorkspaceRequired", err)
 	}
 	if got, err := convRepo.Get(context.Background(), conversationID); err != nil || got != nil {

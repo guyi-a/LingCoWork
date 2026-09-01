@@ -28,22 +28,26 @@ func TestMessageJournalPersistsBoundariesIdempotently(t *testing.T) {
 			{ID: "call-1", Name: "read_file", ArgsJSON: `{"path":"a"}`},
 		},
 	}
-	if err := journal.AppendAssistant(t.Context(), firstAssistant); err != nil {
+	if _, _, err := journal.AppendAssistant(t.Context(), firstAssistant); err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.AppendAssistant(t.Context(), firstAssistant); err != nil {
+	if seq, created, err := journal.AppendAssistant(t.Context(), firstAssistant); err != nil {
 		t.Fatal(err)
+	} else if created || seq != 2 {
+		t.Fatalf("duplicate assistant seq=%d created=%v", seq, created)
 	}
 	result := stream.ToolResultRecord{
 		CallID: "call-1", Name: "read_file", OK: true, Content: "content",
 	}
-	if err := journal.AppendToolResult(t.Context(), result); err != nil {
+	if _, _, err := journal.AppendToolResult(t.Context(), result); err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.AppendToolResult(t.Context(), result); err != nil {
+	if seq, created, err := journal.AppendToolResult(t.Context(), result); err != nil {
 		t.Fatal(err)
+	} else if created || seq != 3 {
+		t.Fatalf("duplicate tool seq=%d created=%v", seq, created)
 	}
-	if err := journal.AppendAssistant(t.Context(), stream.AssistantTurnRecord{
+	if _, _, err := journal.AppendAssistant(t.Context(), stream.AssistantTurnRecord{
 		Content: "done",
 	}); err != nil {
 		t.Fatal(err)
@@ -88,7 +92,7 @@ func TestMessageJournalSerializesParallelToolResults(t *testing.T) {
 	}
 	repo := repository.NewMessageRepo(db)
 	journal := newMessageJournal(repo, "conv", "run")
-	if err := journal.AppendAssistant(t.Context(), stream.AssistantTurnRecord{
+	if _, _, err := journal.AppendAssistant(t.Context(), stream.AssistantTurnRecord{
 		ToolCalls: []stream.ToolCallRecord{
 			{ID: "a", Name: "read_file"},
 			{ID: "b", Name: "read_file"},
@@ -102,7 +106,7 @@ func TestMessageJournalSerializesParallelToolResults(t *testing.T) {
 		wg.Add(1)
 		go func(callID string) {
 			defer wg.Done()
-			if err := journal.AppendToolResult(t.Context(), stream.ToolResultRecord{
+			if _, _, err := journal.AppendToolResult(t.Context(), stream.ToolResultRecord{
 				CallID: callID, Name: "read_file", OK: true, Content: callID,
 			}); err != nil {
 				t.Errorf("append %s: %v", callID, err)
@@ -133,7 +137,7 @@ func TestMessageJournalFailureContentSurvivesReplay(t *testing.T) {
 	}
 	repo := repository.NewMessageRepo(db)
 	journal := newMessageJournal(repo, "conv", "run")
-	if err := journal.AppendToolResult(t.Context(), stream.ToolResultRecord{
+	if _, _, err := journal.AppendToolResult(t.Context(), stream.ToolResultRecord{
 		CallID: "failed", Name: "run_command", OK: false, Error: "exit failed",
 	}); err != nil {
 		t.Fatal(err)

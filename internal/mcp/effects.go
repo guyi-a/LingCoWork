@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"github.com/guyi-a/Interview-Agent/internal/effect"
+	"github.com/guyi-a/Interview-Agent/internal/webfetch"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -35,6 +36,11 @@ func toolEffect(srv ServerConfig, t mcpgo.Tool) effect.Effect {
 	}
 	if srv.Transport() == TransportHTTP {
 		e.URL = srv.URL
+		e.PrivateHost = webfetch.IsPrivateURL(srv.URL)
+	} else {
+		// A stdio server runs locally with the desktop process's filesystem
+		// and environment permissions.
+		e.PrivateHost = true
 	}
 	e.Note = noteFor(e, a)
 	return e

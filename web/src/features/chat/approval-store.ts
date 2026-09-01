@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { postApproval, type InterruptDecisionResult } from "@/lib/api";
+import {
+  postApproval,
+  type ApprovalScope,
+  type InterruptDecisionResult,
+} from "@/lib/api";
 
 // One paused tool call awaiting the user. Displayed by ApprovalBar as a card
 // with tool name + arg summary + [reject] [allow] buttons.
@@ -12,6 +16,9 @@ export type PendingApproval = {
   // checkpointed before the field existed, and the card falls back to
   // summarising argsJson for those.
   effectJson?: string;
+  // Preferred source of truth for whether "allow for this session" is safe.
+  // Optional for pending rows / frames emitted by older backends.
+  rememberable?: boolean;
 };
 
 interface ApprovalStore {
@@ -28,6 +35,7 @@ interface ApprovalStore {
     convId: string,
     interruptId: string,
     decision: "approve" | "deny",
+    scope: ApprovalScope,
     reason?: string,
   ) => Promise<InterruptDecisionResult>;
 }
@@ -58,8 +66,14 @@ export const useApprovalStore = create<ApprovalStore>((set, get) => ({
     set({ pending: map });
   },
 
-  decide: async (convId, interruptId, decision, reason) => {
-    const result = await postApproval(convId, interruptId, decision, reason);
+  decide: async (convId, interruptId, decision, scope, reason) => {
+    const result = await postApproval(
+      convId,
+      interruptId,
+      decision,
+      scope,
+      reason,
+    );
     get().drop(convId, interruptId);
     return result;
   },

@@ -3,10 +3,12 @@ package validation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/guyi-a/Interview-Agent/internal/agent/contextkey"
 	"github.com/guyi-a/Interview-Agent/internal/repository"
@@ -23,6 +25,7 @@ func newValidationFixture(t *testing.T) (*Service, context.Context) {
 	projects := repository.NewProjectRepo(db)
 	convs := repository.NewConversationRepo(db)
 	messages := repository.NewMessageRepo(db)
+	changes := repository.NewWorkspaceChangeRepo(db)
 	if err := projects.Create(t.Context(), &model.Project{
 		ID: "project", Name: "project", Workspace: workspace,
 	}); err != nil {
@@ -40,7 +43,7 @@ func newValidationFixture(t *testing.T) (*Service, context.Context) {
 		t.Fatal(err)
 	}
 	service := NewService(
-		repository.NewValidationRepo(db), messages, convs, projects,
+		repository.NewValidationRepo(db), messages, convs, projects, changes,
 	)
 	return service, contextkey.WithConversationID(t.Context(), "conv")
 }
@@ -65,6 +68,10 @@ func TestEnrichPersistsDeclaredValidationOnly(t *testing.T) {
 	}
 	if output.Validation == nil || output.Validation.ErrorCount != 1 {
 		t.Fatalf("enriched output = %#v", output)
+	}
+	if output.ValidationDigest == nil || output.ValidationDigest.Fingerprint == "" ||
+		len(output.ValidationDigest.Diagnostics) != 1 {
+		t.Fatalf("validation digest = %#v", output.ValidationDigest)
 	}
 	problems, err := service.ListProblems(ctx, "conv", "current")
 	if err != nil {
@@ -95,6 +102,91 @@ func TestEnrichPersistsDeclaredValidationOnly(t *testing.T) {
 	rows, err = service.runs.ListConversation(ctx, "conv", 0)
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("rows after conversation delete=%d err=%v", len(rows), err)
+	}
+}
+
+func TestCompletionStatusTracksChangesAndLatestValidation(t *testing.T) {
+	service, ctx := newValidationFixture(t)
+	conv, _ := service.convs.Get(ctx, "conv")
+	project, _ := service.projects.Get(ctx, *conv.ProjectID)
+	if err := service.changes.CreateEvent(ctx, &model.WorkspaceChangeEvent{
+		ProjectID: "project", ConversationID: "conv", UserMessageSeq: 1,
+		ToolCallID: "write-1", ToolName: "apply_patch", Operation: "write",
+		Path: "internal/a.go", Attribution: "agent", Succeeded: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.EvaluateCompletion(ctx); got.State != GateMissing {
+		t.Fatalf("after change state=%s", got.State)
+	}
+
+	args := `{"command":"go test ./internal/...","validation_kind":"test"}`
+	service.Enrich(ctx, &compose.ToolInput{
+		CallID: "test-failed", Name: "run_command", Arguments: args,
+	}, `{"exit_code":1,"stderr":"internal/a.go:2: error: bad","cwd":"`+project.Workspace+`"}`)
+	failed := service.EvaluateCompletion(ctx)
+	if failed.State != GateFailed || len(failed.Digests) != 1 ||
+		failed.Fingerprint == "" {
+		t.Fatalf("failed status=%#v", failed)
+	}
+
+	service.Enrich(ctx, &compose.ToolInput{
+		CallID: "test-passed", Name: "run_command", Arguments: args,
+	}, `{"exit_code":0,"stdout":"ok","stderr":"","cwd":"`+project.Workspace+`"}`)
+	if got := service.EvaluateCompletion(ctx); got.State != GatePassed {
+		t.Fatalf("after passing validation state=%s digests=%#v", got.State, got.Digests)
+	}
+}
+
+func TestCompletionGateRewritesPrematureFinalAnswer(t *testing.T) {
+	service, ctx := newValidationFixture(t)
+	if err := service.changes.CreateEvent(ctx, &model.WorkspaceChangeEvent{
+		ProjectID: "project", ConversationID: "conv", UserMessageSeq: 1,
+		ToolCallID: "write-1", ToolName: "write_file", Operation: "write",
+		Path: "src/a.ts", Attribution: "agent", Succeeded: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	middleware := service.CompletionMiddleware().(*CompletionGateMiddleware)
+	last := middleware.rewriteFinal(ctx, schema.AssistantMessage("done", nil))
+	if last.Content != "" || len(last.ToolCalls) != 1 ||
+		last.ToolCalls[0].Function.Name != GateToolName {
+		t.Fatalf("rewritten final=%#v", last)
+	}
+}
+
+func TestCompletionGateIgnoresDocumentationOnlyChanges(t *testing.T) {
+	service, ctx := newValidationFixture(t)
+	if err := service.changes.CreateEvent(ctx, &model.WorkspaceChangeEvent{
+		ProjectID: "project", ConversationID: "conv", UserMessageSeq: 1,
+		ToolCallID: "write-doc", ToolName: "write_file", Operation: "write",
+		Path: "README.md", Attribution: "agent", Succeeded: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.EvaluateCompletion(ctx); got.State != GatePassed {
+		t.Fatalf("documentation-only change state=%s", got.State)
+	}
+}
+
+func TestValidationDigestIsBoundedAndStable(t *testing.T) {
+	diagnostics := make([]Diagnostic, 0, 25)
+	for i := 24; i >= 0; i-- {
+		diagnostics = append(diagnostics, Diagnostic{
+			ID: fmt.Sprintf("d-%02d", i), Severity: "error",
+			Path: "a.go", Line: i + 1, Message: fmt.Sprintf("error %d", i),
+		})
+	}
+	summary := Summary{
+		Kind: KindTest, Passed: false, Diagnostics: diagnostics, ErrorCount: 25,
+	}
+	first := NewDigest("go test ./...", "/ws", summary)
+	second := NewDigest("go test ./...", "/ws", summary)
+	if len(first.Diagnostics) != 20 || !first.Truncated {
+		t.Fatalf("digest size=%d truncated=%v", len(first.Diagnostics), first.Truncated)
+	}
+	if first.Fingerprint == "" || first.Fingerprint != second.Fingerprint {
+		t.Fatalf("unstable fingerprints %q %q", first.Fingerprint, second.Fingerprint)
 	}
 }
 

@@ -132,7 +132,7 @@ func main() {
 	workPlanService := workplan.NewService(workPlanRepo)
 	validationRepo := repository.NewValidationRepo(db)
 	validationService := validation.NewService(
-		validationRepo, msgRepo, convRepo, projectRepo,
+		validationRepo, msgRepo, convRepo, projectRepo, workspaceChangeRepo,
 	)
 	compactor := compaction.New(compactionRepo, cfg.Compaction)
 	// Zero means "no fold coming", which the UI reads as: show the raw token
@@ -148,13 +148,8 @@ func main() {
 		log.Printf("context compaction enabled: model=%s threshold=%d tokens keep_last_turns=%d",
 			cfg.Compaction.Model, compaction.ThresholdTokens(cfg.Compaction), cfg.Compaction.KeepLastUserTurns)
 	}
-	approvalModes := approval.NewModeStore()
-	classifier := approval.NewClassifier(cfg.ApprovalFast)
-	if classifier == nil {
-		log.Printf("approval classifier disabled (missing DEEPSEEK_API_KEY or fast-model config); auto mode falls back to fast-path rules only")
-	} else {
-		log.Printf("approval classifier enabled: model=%s timeout=%ds", cfg.ApprovalFast.Model, cfg.ApprovalFast.TimeoutSeconds)
-	}
+	approvalModes := approval.NewModeStore(convRepo)
+	approvalMemory := approval.NewMemory()
 
 	cm, err := llm.NewChatModel(ctx, cfg.LLM)
 	if err != nil {
@@ -239,7 +234,7 @@ func main() {
 		projectRepo,
 		effects,
 	)
-	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, classifier, effects, memoryRegistry, userMemoryPath, changeTracker, workPlanService, validationService)
+	ag, err := agent.NewInterviewADKAgent(ctx, cm, ts, mcpMgr.ToolProvider(), skillLoader, checkpointRepo, convRepo, projectRepo, approvalModes, approvalMemory, effects, memoryRegistry, userMemoryPath, changeTracker, workPlanService, validationService)
 	if err != nil {
 		log.Fatalf("agent.NewInterviewADKAgent: %v", err)
 	}
@@ -255,7 +250,7 @@ func main() {
 		pendingApprovals.Restore(rows)
 		log.Printf("restored %d pending approval(s) from DB", len(rows))
 	}
-	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, instructionStore, pendingApprovals, approvalModes, cfg.LLM.Multimodal, compactor)
+	chatService := service.NewChatService(ag.Runner, ag.RootName, manager, convRepo, msgRepo, projectRepo, instructionStore, pendingApprovals, approvalModes, approvalMemory, cfg.LLM.Multimodal, compactor)
 	convService := service.NewConversationService(convRepo, msgRepo, compactionRepo, manager, browserMgr)
 	projectService := service.NewProjectService(projectRepo, convRepo, manager, browserMgr)
 	workspaceService := service.NewWorkspaceService(convRepo, projectRepo)

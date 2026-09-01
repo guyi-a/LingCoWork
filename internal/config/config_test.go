@@ -8,7 +8,6 @@ func TestLoadVisionDefaultsAndTextSideChannels(t *testing.T) {
 	t.Setenv("LLM_API_KEY", "")
 	t.Setenv("LLM_MODEL", "deepseek-v4-flash-vision-exp")
 	t.Setenv("LLM_MULTIMODAL", "")
-	t.Setenv("APPROVAL_FAST_MODEL", "")
 	t.Setenv("COMPACTION_MODEL", "")
 
 	cfg, err := Load()
@@ -20,9 +19,6 @@ func TestLoadVisionDefaultsAndTextSideChannels(t *testing.T) {
 	}
 	if cfg.LLM.MaxTokens != 32000 {
 		t.Fatalf("max output tokens = %d", cfg.LLM.MaxTokens)
-	}
-	if cfg.ApprovalFast.Model != "deepseek-v4-flash" {
-		t.Fatalf("approval model = %q", cfg.ApprovalFast.Model)
 	}
 	if cfg.Compaction.Model != "deepseek-v4-flash" {
 		t.Fatalf("compaction model = %q", cfg.Compaction.Model)

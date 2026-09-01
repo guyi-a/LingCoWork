@@ -4,10 +4,12 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/guyi-a/Interview-Agent/internal/agentmode"
+	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/instructions"
 	"github.com/guyi-a/Interview-Agent/internal/service"
 	"github.com/guyi-a/Interview-Agent/internal/stream"
@@ -30,9 +32,10 @@ func (h *ChatHandler) Register(r *gin.Engine) {
 }
 
 type chatRequest struct {
-	Message     string                  `json:"message"`
-	Instruction *chatInstructionRequest `json:"instruction,omitempty"`
-	Mode        string                  `json:"mode,omitempty"`
+	Message      string                  `json:"message"`
+	Instruction  *chatInstructionRequest `json:"instruction,omitempty"`
+	Mode         string                  `json:"mode,omitempty"`
+	ApprovalMode string                  `json:"approval_mode,omitempty"`
 }
 
 type chatInstructionRequest struct {
@@ -56,6 +59,10 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "message or instruction is required"})
 		return
 	}
+	if req.ApprovalMode != "" && !approval.ValidMode(approval.Mode(req.ApprovalMode)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval_mode"})
+		return
+	}
 	instructionName := ""
 	if req.Instruction != nil {
 		instructionName = req.Instruction.Name
@@ -72,6 +79,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		instructionName,
 		c.Query("project_id"),
 		req.Mode,
+		req.ApprovalMode,
 	)
 	if err != nil {
 		if errors.Is(err, service.ErrWorkspaceRequired) {
@@ -137,15 +145,29 @@ func (h *ChatHandler) SetAgentMode(c *gin.Context) {
 
 func (h *ChatHandler) Resume(c *gin.Context) {
 	id := c.Param("id")
-	// Only resume in-flight streams. Completed buffers stay in the manager
-	// so the original POST client can drain its `done`/`error` frame, but a
-	// reload client should read history from the DB instead — replaying a
-	// completed buffer would duplicate the persisted assistant message.
-	if !h.chat.IsStreaming(id) {
-		c.Status(http.StatusNoContent)
+	rawAfter := c.Query("after_seq")
+	afterSeq, err := strconv.Atoi(rawAfter)
+	if err != nil || afterSeq < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "after_seq must be a non-negative integer"})
 		return
 	}
-	writeSSE(c, h.chat.Get(id))
+	frames, status, durableSeq, err := h.chat.ResumeStream(c.Request.Context(), id, afterSeq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	switch status {
+	case stream.CursorEqual:
+		writeSSEFrames(c, frames)
+	case stream.CursorClientStale, stream.CursorBufferBehind:
+		c.JSON(http.StatusConflict, gin.H{
+			"error":         "history_cursor_mismatch",
+			"cursor_status": status,
+			"durable_seq":   durableSeq,
+		})
+	default:
+		c.Status(http.StatusNoContent)
+	}
 }
 
 func (h *ChatHandler) Cancel(c *gin.Context) {
@@ -158,6 +180,10 @@ func (h *ChatHandler) Cancel(c *gin.Context) {
 }
 
 func writeSSE(c *gin.Context, buf *stream.StreamBuffer) {
+	writeSSEFrames(c, buf.StreamAll(c.Request.Context()))
+}
+
+func writeSSEFrames(c *gin.Context, ch <-chan []byte) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -171,7 +197,6 @@ func writeSSE(c *gin.Context, buf *stream.StreamBuffer) {
 	}
 	flusher.Flush()
 
-	ch := buf.StreamAll(c.Request.Context())
 	for frame := range ch {
 		if _, err := c.Writer.Write(frame); err != nil {
 			return

@@ -75,7 +75,8 @@ type Frame struct {
 	// tool the frontend has never heard of (an MCP server's, say) still has a
 	// describable effect. Empty for approvals checkpointed before this
 	// existed, and the card falls back to its old argument summary.
-	EffectJSON string `json:"effect_json,omitempty"`
+	EffectJSON   string `json:"effect_json,omitempty"`
+	Rememberable bool   `json:"rememberable,omitempty"`
 
 	// question_required frame — JSON-encoded []hitl.Question that the user
 	// should answer. Kept as string so the wire schema stays flat and the
@@ -115,7 +116,8 @@ type ApprovalInfo struct {
 	//
 	// The card falls back to summarising Args when this is empty, which is
 	// what happens for approvals checkpointed before the field existed.
-	EffectJSON string
+	EffectJSON   string
+	Rememberable bool
 }
 
 // QuestionInfo is what the ask_user tool attaches to tool.Interrupt so the
@@ -176,8 +178,8 @@ type AssistantTurnRecord struct {
 // active. The stream package owns the boundary types; the service layer owns
 // the database implementation.
 type MessageJournal interface {
-	AppendAssistant(ctx context.Context, record AssistantTurnRecord) error
-	AppendToolResult(ctx context.Context, record ToolResultRecord) error
+	AppendAssistant(ctx context.Context, record AssistantTurnRecord) (seq int, created bool, err error)
+	AppendToolResult(ctx context.Context, record ToolResultRecord) (seq int, created bool, err error)
 	AppendPartialAssistant(ctx context.Context, content, reasoning string) error
 	UpdateLastAssistant(ctx context.Context, totalTokens int, extra string) error
 }
@@ -236,12 +238,9 @@ type RunCollector struct {
 	// its own private context, so its totals say nothing about how full the
 	// main thread's window is. The compaction estimator uses this as its
 	// baseline, so mixing the two would badly skew the threshold.
-	totalTokens int
-	// subEventsDirty is true once AppendSubEvent has added an event that the
-	// journal has not yet flushed to the last assistant row's extra. It lets
-	// flushSubEvents skip rewriting the whole sub_events blob on every root
-	// tool result.
-	subEventsDirty bool
+	totalTokens      int
+	subEventsVersion uint64
+	subEventsFlushed uint64
 }
 
 func NewRunCollector() *RunCollector {
@@ -280,24 +279,6 @@ func (c *RunCollector) TotalTokens() int {
 	return c.totalTokens
 }
 
-// SubEventsDirty reports whether new sub-agent events arrived since the last
-// successful flush. Callers snapshot it before flushing and must not reuse a
-// stale snapshot after another AppendSubEvent.
-func (c *RunCollector) SubEventsDirty() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.subEventsDirty
-}
-
-// MarkSubEventsClean clears the dirty flag after the journal durably stored
-// the current sub_events blob. SubEvents records are kept — only the "needs
-// flush" marker drops, so a later event re-arms it.
-func (c *RunCollector) MarkSubEventsClean() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.subEventsDirty = false
-}
-
 // SubEvents returns the recorded sub-agent timeline in arrival order.
 func (c *RunCollector) SubEvents() []SubAgentEvent {
 	c.mu.Lock()
@@ -308,6 +289,25 @@ func (c *RunCollector) SubEvents() []SubAgentEvent {
 	out := make([]SubAgentEvent, len(c.subEvents))
 	copy(out, c.subEvents)
 	return out
+}
+
+func (c *RunCollector) SubEventsForFlush() ([]SubAgentEvent, uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.subEventsVersion == c.subEventsFlushed {
+		return nil, c.subEventsVersion, false
+	}
+	out := make([]SubAgentEvent, len(c.subEvents))
+	copy(out, c.subEvents)
+	return out, c.subEventsVersion, true
+}
+
+func (c *RunCollector) MarkSubEventsFlushed(version uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if version > c.subEventsFlushed {
+		c.subEventsFlushed = version
+	}
 }
 
 // ToolNameByID looks up the tool name we previously recorded for the given
@@ -345,7 +345,7 @@ func (c *RunCollector) ToolNameByID(id string) string {
 func (c *RunCollector) AppendSubEvent(ev SubAgentEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.subEventsDirty = true
+	c.subEventsVersion++
 	if ev.Type == "thinking" || ev.Type == "text" {
 		if n := len(c.subEvents); n > 0 {
 			last := &c.subEvents[n-1]

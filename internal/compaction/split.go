@@ -22,9 +22,8 @@ type Plan struct {
 // followed by its tool rows, so a cut must never land inside a turn.
 //
 // The default (KeepLastUserTurns == 0) folds every row present, which is
-// inherently safe: persistRun writes each run's assistant and tool rows in
-// one atomic batch, so whatever is in the table at turn boundary is a whole
-// number of complete turns. When keeping recent turns, the cut is instead
+// inherently safe because every row present is folded. When keeping recent
+// turns, the cut is instead
 // pushed back to just before a user row, since a user row is the only point
 // guaranteed not to sit between a tool_call and its result.
 //

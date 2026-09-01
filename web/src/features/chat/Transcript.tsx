@@ -36,7 +36,6 @@ export function Transcript({
   trailing,
   plans = [],
   pendingPlanID,
-  onRevealFinished,
 }: {
   turns: ChatTurn[];
   streaming: boolean;
@@ -44,7 +43,6 @@ export function Transcript({
   trailing?: ReactNode;
   plans?: WorkPlan[];
   pendingPlanID?: string;
-  onRevealFinished?: () => void;
 }) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -168,7 +166,6 @@ export function Transcript({
                   streaming && i === turns.length - 1 && t.role === "assistant"
                 }
                 contextLimit={contextLimit}
-                onRevealFinished={onRevealFinished}
               />
               {plansAfterTurn.get(i)?.map((plan) => (
                 <PlanHistoryCard key={plan.id} plan={plan} />

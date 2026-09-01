@@ -75,6 +75,12 @@ func (r *ConversationRepo) SetChatMode(ctx context.Context, id, mode string) err
 		Update("chat_mode", mode).Error
 }
 
+func (r *ConversationRepo) SetApprovalMode(ctx context.Context, id, mode string) error {
+	return r.db.WithContext(ctx).Model(&model.Conversation{}).
+		Where("id = ?", id).
+		Update("approval_mode", mode).Error
+}
+
 // ListByProject returns all conversations belonging to a project.
 func (r *ConversationRepo) ListByProject(ctx context.Context, projectID string) ([]model.Conversation, error) {
 	var out []model.Conversation

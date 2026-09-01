@@ -15,6 +15,9 @@ import "encoding/gob"
 // persist it through the checkpoint store.
 type Decision struct {
 	Approved bool
+	// EffectDigest binds an approval to the exact derived target shown in the
+	// pending card. Empty only for checkpoints created by older builds.
+	EffectDigest string
 	// Reason is user-supplied text shown to the model when a call is denied,
 	// so the agent's next ReAct turn can adjust rather than silently give up.
 	// Ignored when Approved is true.

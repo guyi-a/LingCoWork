@@ -16,6 +16,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useApprovalStore } from "@/features/chat/approval-store";
 import { useQuestionStore } from "@/features/chat/question-store";
 import { usePlanStore } from "@/features/chat/plan-store";
+import { findResumeAssistant } from "./chat-resume";
 
 export type ToolCall = {
   id: string;
@@ -126,6 +127,7 @@ type Frame = {
   plan_json?: string;
   // approval_required — 后端 effect 的序列化结果，卡片优先用它描述这次调用。
   effect_json?: string;
+  rememberable?: boolean;
   // usage — one frame per model call, so `total` is the context that call
   // saw, not a running sum. The last one to arrive is the turn's occupancy.
   prompt?: number;
@@ -854,6 +856,7 @@ export function useChatStream(
                 tool: f.name ?? "",
                 argsJson: f.args_json ?? "",
                 effectJson: f.effect_json ?? "",
+                rememberable: f.rememberable,
               });
             }
           },
@@ -927,7 +930,7 @@ export function useChatStream(
       }
       if (cancelled) return;
       setContextLimit(history.contextLimit);
-      const initialTurns = fromPersisted(history.messages);
+      let initialTurns = fromPersisted(history.messages);
       setTurns(initialTurns);
 
       let latestPlan: WorkPlan | null = null;
@@ -975,6 +978,7 @@ export function useChatStream(
               tool: item.tool ?? "",
               argsJson: item.args_json ?? "",
               effectJson: item.effect_json ?? "",
+              rememberable: item.rememberable,
             });
           }
         }
@@ -986,9 +990,26 @@ export function useChatStream(
 
       // Always probe for an in-flight stream — backend returns 204 when there
       // is no live buffer, so we don't need to guess from the persisted rows.
-      let res: Response | null;
+      let res: Response | null = null;
       try {
-        res = await resumeChat(conversationID, controller.signal);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const resumed = await resumeChat(
+            conversationID,
+            controller.signal,
+            history.lastSeq,
+          );
+          if (resumed.kind === "stream") {
+            res = resumed.response;
+            break;
+          }
+          if (resumed.kind === "idle") break;
+          await new Promise((resolve) => window.setTimeout(resolve, 25));
+          history = await listMessages(conversationID);
+          if (cancelled) return;
+          setContextLimit(history.contextLimit);
+          initialTurns = fromPersisted(history.messages);
+          setTurns(initialTurns);
+        }
       } catch (err) {
         // Never clear the flag once cancelled: the effect has already re-run
         // for a different conversation and re-armed it, and this stale
@@ -1005,15 +1026,7 @@ export function useChatStream(
         return;
       }
 
-      const existingTurn = [...initialTurns]
-        .reverse()
-        .find(
-          (t) =>
-            t.role === "assistant" &&
-            t.tools.some(
-              (tool) => tool.status === "pending" || tool.status === "running",
-            ),
-        );
+      const existingTurn = findResumeAssistant(initialTurns);
 
       let targetId: string;
       if (existingTurn) {
@@ -1189,9 +1202,26 @@ export function useChatStream(
   const resume = useCallback(async () => {
     if (streaming) return;
     const controller = new AbortController();
-    let res: Response | null;
+    let res: Response | null = null;
+    let hydrated: ChatTurn[] = turnsRef.current;
     try {
-      res = await resumeChat(conversationID, controller.signal);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const history = await listMessages(conversationID);
+        hydrated = fromPersisted(history.messages);
+        setContextLimit(history.contextLimit);
+        setTurns(hydrated);
+        const resumed = await resumeChat(
+          conversationID,
+          controller.signal,
+          history.lastSeq,
+        );
+        if (resumed.kind === "stream") {
+          res = resumed.response;
+          break;
+        }
+        if (resumed.kind === "idle") break;
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      }
     } catch (err) {
       if ((err as { name?: string }).name === "AbortError") return;
       console.error("[chat] resume after approval failed:", err);
@@ -1199,9 +1229,7 @@ export function useChatStream(
     }
     if (!res) return;
 
-    const lastAssistant = [...turnsRef.current]
-      .reverse()
-      .find((t) => t.role === "assistant");
+    const lastAssistant = findResumeAssistant(hydrated);
 
     let targetId: string;
     if (lastAssistant) {

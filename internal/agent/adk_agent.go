@@ -80,7 +80,7 @@ func NewInterviewADKAgent(
 	convRepo *repository.ConversationRepo,
 	projectRepo *repository.ProjectRepo,
 	approvalModes *approval.ModeStore,
-	classifier *approval.Classifier,
+	approvalMemory *approval.Memory,
 	effects *effect.Registry,
 	memoryRegistry *memory.Registry,
 	userMemoryPath string,
@@ -106,12 +106,24 @@ func NewInterviewADKAgent(
 	if err != nil {
 		return nil, fmt.Errorf("select sub-agent tools: %w", err)
 	}
+	// The completion gate is root-only: sub-agents may change files, but the
+	// supervisor owns validation for the complete user turn.
+	if validations != nil {
+		gateTool, gateErr := validations.CompletionTool()
+		if gateErr != nil {
+			return nil, fmt.Errorf("build validation gate tool: %w", gateErr)
+		}
+		baseTools = append(baseTools, gateTool)
+		effects.Register(validation.GateToolName, effect.Static(effect.Effect{
+			Kind: effect.KindAgentState,
+		}))
+	}
 
 	// One middleware value for every agent in the topology. Constructing it
 	// per agent would work today and drift tomorrow: a change made at one of
 	// five call sites would leave the other four judging calls by the old
 	// rules, and the sub-agents are exactly where that would go unnoticed.
-	approvalMW := approval.Middleware(approvalModes, classifier, effects)
+	approvalMW := approval.Middleware(approvalModes, approvalMemory, effects)
 	toolMiddlewares := []compose.ToolMiddleware{
 		toolerr.Middleware(),
 		planGuard(convRepo),
@@ -128,6 +140,10 @@ func NewInterviewADKAgent(
 	// 所有 sub-agent 共用同一个实例（无状态），保证主 agent 和 sub-agent 看到的
 	// workspace 视图一致。
 	workspaceMW := runtimectx.NewWorkspaceMiddleware(convRepo, projectRepo)
+	agentsMDMW, err := runtimectx.NewAgentsMDMiddleware(ctx, convRepo, projectRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create AGENTS.md middleware: %w", err)
+	}
 
 	// Skills 索引改成每轮注入（而不是构建时烤进 instruction）：Skill Hub 装完
 	// 的技能下一轮就能出现在索引里。所有 agent 共用一个实例。
@@ -163,7 +179,7 @@ func NewInterviewADKAgent(
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
-		Handlers: []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
+		Handlers: []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, agentsMDMW},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deep.New: %w", err)
@@ -185,7 +201,7 @@ func NewInterviewADKAgent(
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, agentsMDMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -206,7 +222,7 @@ func NewInterviewADKAgent(
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, agentsMDMW},
 		MaxIterations: 30,
 	})
 	if err != nil {
@@ -228,7 +244,7 @@ func NewInterviewADKAgent(
 				ToolCallMiddlewares: toolMiddlewares,
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, agentsMDMW},
 		MaxIterations: 50,
 	})
 	if err != nil {
@@ -258,7 +274,7 @@ func NewInterviewADKAgent(
 				},
 			},
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW},
+		Handlers:      []adk.ChatModelAgentMiddleware{workspaceMW, agentsMDMW},
 		MaxIterations: exploreMaxIterations,
 	})
 	if err != nil {
@@ -289,7 +305,10 @@ func NewInterviewADKAgent(
 			// Runner's iter so the UI can show real-time progress.
 			EmitInternalEvents: true,
 		},
-		Handlers:      []adk.ChatModelAgentMiddleware{skillsMW, memoryMW, workspaceMW, dynamicToolsMW, modeMW, workPlanMW},
+		Handlers: []adk.ChatModelAgentMiddleware{
+			skillsMW, memoryMW, workspaceMW, dynamicToolsMW, modeMW, workPlanMW,
+			agentsMDMW, validations.CompletionMiddleware(),
+		},
 		MaxIterations: 50,
 	})
 	if err != nil {

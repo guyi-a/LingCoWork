@@ -82,7 +82,7 @@ const (
 	// Normal: does something, but nothing irreversible.
 	Normal Classification = "normal"
 	// Destructive: irreversible or unparseable. Always routed to a human,
-	// even in full_access.
+	// even in auto.
 	Destructive Classification = "destructive"
 )
 
@@ -101,12 +101,11 @@ type Effect struct {
 	Path string `json:"path,omitempty"`
 	// PathScope / DestScope keep both sides of a transfer visible. A single
 	// worst-case Scope cannot tell the approval card whether the source or
-	// the destination is the one leaving the workspace, and the classifier
-	// needs the same distinction to judge `cp secret.txt /tmp` differently
-	// from `cp /tmp/data.csv ./`.
+	// the destination is the one leaving the workspace.
 	PathScope Scope  `json:"path_scope,omitempty"`
 	DestPath  string `json:"dest_path,omitempty"`
 	DestScope Scope  `json:"dest_scope,omitempty"`
+	Operation string `json:"operation,omitempty"`
 
 	// Destructive marks an irreversible deletion. Set by the deriver at the
 	// same granularity as the shell destructive wall: a recursive remove or
@@ -119,14 +118,14 @@ type Effect struct {
 	Classification Classification `json:"classification,omitempty"`
 
 	// network-request
-	URL string `json:"url,omitempty"`
+	URL         string `json:"url,omitempty"`
+	PrivateHost bool   `json:"private_host,omitempty"`
 
 	// delegate-agent
 	Agent string `json:"agent,omitempty"`
 
 	// mcp-call. Server and RemoteTool identify the call; the model sees a
-	// prefixed name, and neither the approval card nor the classifier can say
-	// anything useful without the pair behind it.
+	// prefixed name, and the approval card needs the pair behind it.
 	Server     string `json:"server,omitempty"`
 	RemoteTool string `json:"remote_tool,omitempty"`
 	Transport  string `json:"transport,omitempty"`

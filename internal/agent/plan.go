@@ -34,7 +34,7 @@ func withoutRootStateTools(
 
 // planGuard is the enforcement layer behind the model-facing tool filter.
 // It intentionally runs before approval: Plan mode is a capability boundary,
-// not a request that full_access may approve away.
+// not a request that auto mode may approve away.
 func planGuard(convRepo *repository.ConversationRepo) compose.ToolMiddleware {
 	validate := func(ctx context.Context, input *compose.ToolInput) error {
 		inPlanMode := conversationInPlanMode(ctx, convRepo)

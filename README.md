@@ -31,17 +31,21 @@ eino ADK 提供 ChatModelAgent、Runner、AgentAsTool、事件迭代器和 inter
 - **26 个内置工具**：时间、RAG、人工提问、Plan/Todo、代码搜索、文件读写、目录操作、命令执行、文档解析、
   Workspace、浏览器、联网、Skill 加载和长期记忆。准确名称以
   `tools.BuiltinToolNames()` 为准。
-- **六个运行时中间件**：Skills 索引、两级 Memory、Workspace、MCP 动态工具、Agent/Plan 模式和结构化任务状态均在
-  每轮运行前刷新；安装 Skill 或完成 OAuth 后无需重启 Agent。
+- **运行时上下文中间件**：Skills 索引、两级 Memory、Workspace、根目录 `AGENTS.md`、
+  MCP 动态工具、Agent/Plan 模式和结构化任务状态按运行刷新；安装 Skill、修改项目规则或完成
+  OAuth 后无需重启 Agent。`AGENTS.md` 单次最多读取 16 KiB，不加载 `.cursor/rules`。
 - **Effect 审批**：策略判断的是调用后果，而不是工具名。未知 effect 默认询问用户；
   pending approval 和 checkpoint 会落库，页面刷新或进程重启后仍可恢复。
 - **流式与子 Agent 可观测性**：Runner 事件编码为 SSE，主回复、thinking、工具调用和
   sub-agent 内部事件按层级展示并持久化。
 - **消息级增量持久化**：完整 assistant/tool 消息在边界立即幂等落库；Buffer 只保留尚未
-  持久化的实时增量，取消或重启最多损失当前未完成边界，不丢整轮已完成步骤。
+  持久化的实时增量，并通过 DB `last_seq` / Buffer `durable_seq` 游标原子恢复，避免切换会话时
+  重复渲染；取消或重启最多损失当前未完成边界，不丢整轮已完成步骤。
 - **上下文压缩**：在轮次之间把旧历史折叠成摘要；原消息不删除，UI 仍展示完整记录。
 - **结构化验证**：`run_command` 可声明 test/build/lint/typecheck/format，常见 Go、TypeScript、
-  ESLint 诊断会持久化到 Problems，并可跳转到对应文件行。
+  ESLint 诊断会持久化到 Problems，并可跳转到对应文件行。代码修改后若未验证或验证失败，
+  completion gate 会阻止过早收尾并将紧凑 diagnostics 交回 Agent；相同失败重复两次或闸门
+  触发三次后停止自动续行，要求如实报告剩余问题。
 - **原生图像理解**：默认使用 `deepseek-v4-flash-vision-exp`，用户主动附加的
   JPEG/PNG/GIF/WebP 会作为图片内容发送给 DeepSeek；关闭 `LLM_MULTIMODAL` 后改走本地 OCR。
 
@@ -63,6 +67,8 @@ create_plan       todo_write
   动态客户端注册。远端工具只注入 supervisor，并沿用同一套 effect 审批。
 - **Memory**：用户级与项目级 Markdown 记忆，每轮注入；模型通过 `remember` 写入，
   覆盖式修改需要审批。
+- **显式上下文**：Composer 输入 `@` 可从当前 Workspace 选择文件或文件夹，继续复用
+  `[file:]` / `[folder:]` 附件协议，因此排队、恢复和历史附件展示保持一致。
 - **RAG 与联网搜索**：Hybrid Vector + BM25 检索；联网搜索支持 Tavily / Bocha 双源。
 
 ### Workspace 与桌面应用
@@ -73,6 +79,23 @@ create_plan       todo_write
   通过 PTY 提供以 Workspace 为 cwd 的交互式登录 shell。HTML 默认按源码展示，不在应用本源中执行。
 - Electron 开发态加载 Vite；打包态通过 `lingcowork://app` 加载包内前端，并托管
   `darwin/arm64` Go sidecar。后端就绪后才显示窗口，退出时按进程组清理子进程。
+
+### Coding Eval
+
+`coding-eval` 提供 30 项任务目录，其中 10 项本地确定性 smoke 已进入 baseline，另外 20 项
+保留为待校准 catalog。reference driver 用来验证 fixture、Git worktree、评分和台账本身；
+agent driver 通过正在运行的 LingCoWork HTTP/SSE API 执行同一任务。Agent 任务始终在临时
+worktree 中运行，不接触当前 checkout。
+
+```bash
+go run ./cmd/coding-eval validate
+go run ./cmd/coding-eval run-suite --driver reference --ledger=
+# 应用由用户启动后，执行真实 Agent Window smoke：
+go run ./cmd/coding-eval run-agent --base-url http://127.0.0.1:9001 smoke-fix-typo
+```
+
+默认台账写入 `.coding-eval/ledger.jsonl`（已 gitignore）；可用
+`go run ./cmd/coding-eval summary` 汇总。
 
 ## 技术栈
 
@@ -206,7 +229,6 @@ OAuth token 和动态注册得到的 client id 存在 SQLite 中，不写回 JSO
 | `DEEPSEEK_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 主 LLM（DeepSeek OpenAI 兼容） |
 | `LLM_ENABLE_THINKING` / `LLM_REASONING_EFFORT` | 是否启用思考 & effort（high/max） |
 | `LLM_MULTIMODAL` | 是否将用户附图发送给视觉模型；关闭后使用本地 OCR 回退 |
-| `APPROVAL_FAST_*` | 审批 auto 模式的快速分类器（共用 `DEEPSEEK_API_KEY`） |
 | `COMPACTION_ENABLED` / `COMPACTION_MODEL` / `COMPACTION_WINDOW_TOKENS` 等 | 跨轮次上下文压缩（共用 `DEEPSEEK_API_KEY`），见下节 |
 | `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | RAG 嵌入模型（默认 DashScope `text-embedding-v3`） |
 | `RAG_DOCS_DIR` / `RAG_DB_PATH` / `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | RAG 索引 & 检索参数 |
@@ -245,7 +267,10 @@ go run ./cmd/rag-search "query keywords"      # 命令行验证检索
 - **Workspace 隔离** — 会话可使用默认 Workspace，也可绑定项目 Workspace；相对路径统一在
   当前根目录解析，越界路径会被拒绝或进入审批。
 - **流式与阶段追踪** — `internal/stream` 分阶段发 SSE，前端可以拿到 "thinking / tool_call / tool_result / text" 等阶段标签。
-- **审批门槛** — 策略按调用的 **effect**（`internal/effect`）决策而非工具名：写入、移动、执行命令、以及读取工作区外的文件会挂起等审批；破坏性操作和无法识别 effect 的调用即使 `full_access` 也拦。会话选择 `auto` 模式时由快速分类器判断能否自动放行；`ask_user` 工具走同一套人工介入通道。
+- **审批门槛** — 策略按调用的 **effect**（`internal/effect`）而非工具名，以纯规则实现
+  `manual / accept-write / auto` 三档；未知、破坏性、长期 Memory 和敏感凭据写入在任何模式下
+  都要人工确认。审批卡可选择仅允许一次或精确记住本会话，同一路径/命令之外不会扩大授权，
+  且执行前会重新推导 effect 防止目标在审批后变化。
 - **Skills 动态加载** — Skill 是方法论提示词和允许工具边界，通过 `load_skill` 按需进入
   上下文；Skills 索引每轮刷新。
 - **Memory 分层** — 用户级记忆对所有项目生效，项目级记忆跟随 Workspace；两者均有大小限制

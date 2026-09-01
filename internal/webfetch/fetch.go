@@ -29,13 +29,13 @@ import (
 )
 
 const (
-	DefaultUserAgent   = "Interview-Agent/0.1 (WebFetch)"
-	DefaultAccept      = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-	MaxContentLength   = 5_000_000
-	DefaultMaxBytes    = 2_000_000
-	DefaultTimeout     = 30 * time.Second
-	MaxTimeoutCap      = 120 * time.Second
-	MaxRedirects       = 10
+	DefaultUserAgent = "Interview-Agent/0.1 (WebFetch)"
+	DefaultAccept    = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	MaxContentLength = 5_000_000
+	DefaultMaxBytes  = 2_000_000
+	DefaultTimeout   = 30 * time.Second
+	MaxTimeoutCap    = 120 * time.Second
+	MaxRedirects     = 10
 )
 
 // Result 是一次 HTTP 抓取的结果。
@@ -92,11 +92,11 @@ func (e *FetchError) Unwrap() error { return e.Err }
 
 // Options 是 FetchURL 的可选参数。
 type Options struct {
-	MaxBytes             int           // 最大响应字节；≤0 用 DefaultMaxBytes；上限 MaxContentLength
-	Timeout              time.Duration // 单次请求超时；≤0 用 DefaultTimeout；上限 MaxTimeoutCap
-	AllowPrivateNetwork  bool          // false 时私网 URL / redirect 目标直接挡；true 时放行
-	UserAgent            string        // 自定义 UA
-	FollowRedirects      bool          // true=自动跟进同域 redirect；false=直接返 IsRedirect=true
+	MaxBytes            int           // 最大响应字节；≤0 用 DefaultMaxBytes；上限 MaxContentLength
+	Timeout             time.Duration // 单次请求超时；≤0 用 DefaultTimeout；上限 MaxTimeoutCap
+	AllowPrivateNetwork bool          // false 时私网 URL / redirect 目标直接挡；true 时放行
+	UserAgent           string        // 自定义 UA
+	FollowRedirects     bool          // true=自动跟进同域 redirect；false=直接返 IsRedirect=true
 	// OnPrivateRedirect 是"redirect 落到私网时"的回调；返回 error 就 abort
 	// 抓取（典型用法：请求用户 approval）。回调不设时，走 AllowPrivateNetwork
 	// 的兜底（false→抛 ErrPrivateNetwork；true→放行）。
@@ -116,8 +116,8 @@ var (
 )
 
 var privateHostnames = map[string]struct{}{
-	"localhost":              {},
-	"localhost.localdomain":  {},
+	"localhost":             {},
+	"localhost.localdomain": {},
 }
 
 func isPrivateIP(ipStr string) bool {
@@ -154,6 +154,16 @@ func isPrivateHostname(hostname string) bool {
 		}
 	}
 	return false
+}
+
+// IsPrivateURL classifies literal private/local targets without performing
+// DNS. FetchURL applies the same check at execution time.
+func IsPrivateURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return isPrivateHostname(parsed.Hostname())
 }
 
 func extractTextFromHTML(s string) string {

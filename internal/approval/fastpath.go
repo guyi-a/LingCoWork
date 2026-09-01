@@ -9,9 +9,8 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// pathIsSensitive returns (reason, true) for paths the LLM should look at
-// instead of the fast path silently approving them. Everything checked here
-// is CHEAP — no filesystem access, purely string-level.
+// pathIsSensitive returns (reason, true) for paths that must cross the
+// always-confirm wall. Everything checked here is string-level.
 //
 // This used to also reject absolute paths, home-prefixed paths and `..`
 // traversal. Those are gone because the effect's Scope now answers the same
@@ -113,16 +112,13 @@ func contentLooksSensitive(content string) (string, bool) {
 	return "", false
 }
 
-// isSafeShellCommand is the auto-mode fast path for run_command. Parses the
-// command line with mvdan/sh and lets it through ONLY when EVERY sub-command
-// (across && / || / ; / |) is on the read-only whitelist AND there are no
-// output redirections and no dangerous flags. Anything else falls through to
-// the LLM classifier (or human review if that's off).
+// isSafeShellCommand parses run_command and returns true only when every
+// sub-command is read-only and there are no output redirections or dangerous
+// flags.
 //
 // The whitelist is deliberately narrow. Tools that could write files or run
 // arbitrary code (python / node / go / pandoc / marp / typst / ffmpeg / npm /
-// pip / uv / cargo / make / brew ...) are NOT here — they can be safe in
-// context, but that judgment belongs to the classifier, not this rule set.
+// pip / uv / cargo / make / brew ...) are NOT here.
 func isSafeShellCommand(argsJSON string) (bool, string) {
 	if argsJSON == "" {
 		return false, "empty args"

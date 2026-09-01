@@ -9,7 +9,7 @@ import (
 )
 
 // This file is the destructive wall: the set of shell commands that route to
-// a human no matter which approval mode the conversation is in, full_access
+// a human no matter which approval mode the conversation is in, including auto
 // included. A user who elevated the mode is saying they trust the agent's
 // judgment, not that they want one click to be able to lose their data.
 //

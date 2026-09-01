@@ -218,6 +218,7 @@ func emitInterrupt(
 				frame.Name = info.Tool
 				frame.ArgsJSON = info.Args
 				frame.EffectJSON = info.EffectJSON
+				frame.Rememberable = info.Rememberable
 			}
 		case *QuestionInfo:
 			frame.Type = "question_required"
@@ -401,16 +402,17 @@ func drainAssistantStream(
 			ToolCalls: tcs, TotalTokens: totalTokens,
 		}
 		if journal != nil {
-			if err := journal.AppendAssistant(ctx, record); err != nil {
+			seq, _, err := journal.AppendAssistant(ctx, record)
+			if err != nil {
 				return err
 			}
+			buf.CommitBoundary(seq)
+		} else {
+			buf.ClearReplay()
 		}
 		if collector != nil {
 			collector.OpenTurn(full.Content, full.ReasoningContent, tcs)
 		}
-		// The completed assistant is now durable. A reconnect loads it from
-		// history, so only later unfinished deltas belong in replay.
-		buf.ClearReplay()
 	}
 
 	for _, tc := range full.ToolCalls {
@@ -418,10 +420,11 @@ func drainAssistantStream(
 			Type: "tool_call", Agent: agentField, ParentToolCallID: parentID,
 			ID: tc.ID, Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
 		})
-		// Tool events are id-addressed and safe to replay over DB history.
-		// Keep them until the next assistant boundary so a reconnect racing
-		// this result cannot miss it.
-		buf.Append(frame)
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if collector != nil {
 			if isRoot {
 				collector.startTool(tc.ID, tc.Function.Name, tc.Function.Arguments)
@@ -442,7 +445,11 @@ func drainAssistantStream(
 			Type: "usage", Agent: agentField, ParentToolCallID: parentID,
 			Prompt: u.PromptTokens, Reply: u.CompletionTokens, Total: u.TotalTokens,
 		})
-		buf.Append(frame)
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
+		}
 		if isRoot && collector != nil {
 			collector.SetTotalTokens(u.TotalTokens)
 		}
@@ -485,21 +492,14 @@ func emitToolResult(
 		record := ToolResultRecord{
 			CallID: msg.ToolCallID, Name: name, OK: false, Error: errMsg,
 		}
+		durableSeq := 0
 		if isRoot && journal != nil {
-			if err := journal.AppendToolResult(ctx, record); err != nil {
+			seq, _, err := journal.AppendToolResult(ctx, record)
+			if err != nil {
 				return err
 			}
+			durableSeq = seq
 		}
-		frame := Encode(Frame{
-			Type:             "tool_result",
-			Agent:            agentField,
-			ParentToolCallID: parentID,
-			ID:               msg.ToolCallID,
-			Name:             name,
-			OK:               boolPtr(false),
-			Error:            errMsg,
-		})
-		buf.Append(frame)
 		if collector != nil {
 			if isRoot {
 				collector.finishTool(msg.ToolCallID, false, "", errMsg)
@@ -520,6 +520,18 @@ func emitToolResult(
 			if err := flushSubEvents(ctx, collector, journal); err != nil {
 				return err
 			}
+			if durableSeq > 0 {
+				buf.CommitBoundary(durableSeq)
+			}
+		}
+		frame := Encode(Frame{
+			Type: "tool_result", Agent: agentField, ParentToolCallID: parentID,
+			ID: msg.ToolCallID, Name: name, OK: boolPtr(false), Error: errMsg,
+		})
+		if isRoot {
+			buf.PublishLive(frame)
+		} else {
+			buf.Append(frame)
 		}
 		return nil
 	}
@@ -533,22 +545,14 @@ func emitToolResult(
 		CallID: msg.ToolCallID, Name: name, OK: true,
 		Content: msg.Content, Cancelled: cancelled,
 	}
+	durableSeq := 0
 	if isRoot && journal != nil {
-		if err := journal.AppendToolResult(ctx, record); err != nil {
+		seq, _, err := journal.AppendToolResult(ctx, record)
+		if err != nil {
 			return err
 		}
+		durableSeq = seq
 	}
-	frame := Encode(Frame{
-		Type:             "tool_result",
-		Agent:            agentField,
-		ParentToolCallID: parentID,
-		ID:               msg.ToolCallID,
-		Name:             name,
-		OK:               boolPtr(true),
-		Content:          msg.Content,
-		Cancelled:        cancelled,
-	})
-	buf.Append(frame)
 	if collector != nil {
 		if isRoot {
 			collector.finishTool(msg.ToolCallID, true, msg.Content, "")
@@ -569,6 +573,19 @@ func emitToolResult(
 		if err := flushSubEvents(ctx, collector, journal); err != nil {
 			return err
 		}
+		if durableSeq > 0 {
+			buf.CommitBoundary(durableSeq)
+		}
+	}
+	frame := Encode(Frame{
+		Type: "tool_result", Agent: agentField, ParentToolCallID: parentID,
+		ID: msg.ToolCallID, Name: name, OK: boolPtr(true),
+		Content: msg.Content, Cancelled: cancelled,
+	})
+	if isRoot {
+		buf.PublishLive(frame)
+	} else {
+		buf.Append(frame)
 	}
 	return nil
 }
@@ -581,17 +598,12 @@ func flushSubEvents(
 	if collector == nil || journal == nil {
 		return nil
 	}
-	if !collector.SubEventsDirty() {
-		// Nothing new since the last successful flush (or no sub-agent ran) —
-		// rewriting the whole sub_events blob on every root tool result would
-		// multiply DB writes for a serially-growing array.
+	events, version, dirty := collector.SubEventsForFlush()
+	if !dirty {
 		return nil
 	}
-	events := collector.SubEvents()
 	if len(events) == 0 {
-		// Defensive: dirty with nothing to write. Drop the marker so the next
-		// root tool result doesn't retry the same no-op.
-		collector.MarkSubEventsClean()
+		collector.MarkSubEventsFlushed(version)
 		return nil
 	}
 	data, err := json.Marshal(map[string]any{"sub_events": events})
@@ -601,7 +613,7 @@ func flushSubEvents(
 	if err := journal.UpdateLastAssistant(ctx, 0, string(data)); err != nil {
 		return err
 	}
-	collector.MarkSubEventsClean()
+	collector.MarkSubEventsFlushed(version)
 	return nil
 }
 
@@ -636,14 +648,17 @@ func emitNonStreamAssistant(
 			ToolCalls: tcs, TotalTokens: totalTokens,
 		}
 		if journal != nil {
-			if err := journal.AppendAssistant(ctx, record); err != nil {
+			seq, _, err := journal.AppendAssistant(ctx, record)
+			if err != nil {
 				return err
 			}
+			buf.CommitBoundary(seq)
+		} else {
+			buf.ClearReplay()
 		}
 		if collector != nil {
 			collector.OpenTurn(msg.Content, msg.ReasoningContent, tcs)
 		}
-		buf.ClearReplay()
 	}
 
 	if msg.ReasoningContent != "" {

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -38,6 +39,33 @@ func TestScopeOfResolvedPath(t *testing.T) {
 	// No workspace bound means no path can be established as inside one.
 	if got := scopeOfResolvedPath("", "/anything"); got != effect.ScopeExternal {
 		t.Errorf("with no workspace root, got %q, want external", got)
+	}
+}
+
+func TestCanonicalEffectPathDetectsSymlinkRetarget(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	if err := os.MkdirAll(a, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(a, link); err != nil {
+		t.Fatal(err)
+	}
+	before := canonicalEffectPath(filepath.Join(link, "new.txt"))
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(b, link); err != nil {
+		t.Fatal(err)
+	}
+	after := canonicalEffectPath(filepath.Join(link, "new.txt"))
+	if before == after {
+		t.Fatalf("retargeted symlink kept the same canonical effect path: %q", before)
 	}
 }
 
@@ -222,7 +250,8 @@ func TestDeriveTransferKeepsBothEnds(t *testing.T) {
 	if e.Kind != effect.KindFileTransfer {
 		t.Fatalf("kind = %q, want filesystem-transfer", e.Kind)
 	}
-	if e.Path != "/tmp/data.csv" || e.DestPath != "/etc/data.csv" {
+	if e.Path != canonicalEffectPath("/tmp/data.csv") ||
+		e.DestPath != "/etc/data.csv" {
 		t.Errorf("paths = %q → %q, want both preserved", e.Path, e.DestPath)
 	}
 	if e.PathScope != effect.ScopeExternal || e.DestScope != effect.ScopeExternal {

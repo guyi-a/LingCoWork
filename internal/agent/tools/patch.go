@@ -23,6 +23,11 @@ const (
 type ApplyPatchInput struct {
 	Path  string `json:"path" jsonschema:"description=Existing UTF-8 text file to modify. Workspace-relative or an absolute path inside the workspace."`
 	Patch string `json:"patch" jsonschema:"description=One or more context hunks. Start each hunk with @@ (an optional label may follow). Prefix unchanged context lines with one space\\, removed lines with -\\, and added lines with +. Every hunk must contain a change and enough old/context lines to match exactly once."`
+	// ObservedState is the observed_state read_file returned for this file.
+	// When present, the patch is rejected if the file changed since you read
+	// it, so an edit based on a stale read is caught before the fuzzy fallback
+	// could apply to a version you never saw.
+	ObservedState string `json:"observed_state,omitempty" jsonschema:"description=Echo the observed_state you got from read_file for this file\\, so the patch is rejected if the file changed since you read it."`
 }
 
 type ApplyPatchOutput struct {
@@ -33,6 +38,9 @@ type ApplyPatchOutput struct {
 	Deletions   int                    `json:"deletions"`
 	BytesBefore int                    `json:"bytes_before"`
 	BytesAfter  int                    `json:"bytes_after"`
+	// FuzzyHunks counts hunks that were applied via the whitespace-tolerant
+	// fallback rather than an exact context match.
+	FuzzyHunks int `json:"fuzzy_hunks,omitempty"`
 }
 
 type ApplyPatchHunkOutput struct {
@@ -40,6 +48,9 @@ type ApplyPatchHunkOutput struct {
 	Line      int `json:"line"`
 	Additions int `json:"additions"`
 	Deletions int `json:"deletions"`
+	// Fuzzy is true when this hunk landed only after the conservative
+	// whitespace-tolerant fallback (not an exact context match).
+	Fuzzy bool `json:"fuzzy,omitempty"`
 }
 
 type contextPatchHunk struct {
@@ -53,6 +64,7 @@ type appliedPatchHunk struct {
 	line      int
 	additions int
 	deletions int
+	fuzzy     bool
 }
 
 func newApplyPatchTool(d *fsDeps) (tool.BaseTool, error) {
@@ -78,7 +90,7 @@ func newApplyPatchTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"apply_patch",
-		"Apply one or more exact context hunks to an existing UTF-8 text file inside the workspace. Format: start every hunk with @@, then prefix context with a space, removals with -, and additions with +. All hunks are validated in memory before one atomic write; missing or ambiguous context rejects the entire patch and leaves the file unchanged. Use this as the primary tool for partial code edits. Use write_file for new/full files and rm for deletion.",
+		"Apply one or more exact context hunks to an existing UTF-8 text file inside the workspace. Format: start every hunk with @@, then prefix context with a space, removals with -, and additions with +. All hunks are validated in memory before one atomic write; missing or ambiguous context rejects the entire patch and leaves the file unchanged. If an exact match is not found, a conservative whitespace-tolerant fallback anchors on a distinctive line and applies only when the match is unambiguous (reported as fuzzy); otherwise the whole patch is rejected. Use this as the primary tool for partial code edits. Use write_file for new/full files and rm for deletion. If you previously read_file this path, pass its observed_state so the patch is rejected when the file changed since you read it.",
 		fn,
 	)
 }
@@ -109,6 +121,9 @@ func applyPatchFile(
 	raw, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, fmt.Errorf("read target: %w", err)
+	}
+	if err := verifyObservedState(abs, in.Path, "patch", in.ObservedState); err != nil {
+		return nil, err
 	}
 	sniffLen := min(len(raw), binarySniffSize)
 	if hasNullByte(raw[:sniffLen]) || !utf8.Valid(raw) {
@@ -145,12 +160,17 @@ func applyPatchFile(
 	for i, hunk := range applied {
 		out.Additions += hunk.additions
 		out.Deletions += hunk.deletions
-		out.HunkDetails = append(out.HunkDetails, ApplyPatchHunkOutput{
+		hd := ApplyPatchHunkOutput{
 			Index:     i + 1,
 			Line:      hunk.line,
 			Additions: hunk.additions,
 			Deletions: hunk.deletions,
-		})
+			Fuzzy:     hunk.fuzzy,
+		}
+		if hunk.fuzzy {
+			out.FuzzyHunks++
+		}
+		out.HunkDetails = append(out.HunkDetails, hd)
 	}
 	return out, nil
 }
@@ -249,14 +269,26 @@ func applyContextPatch(ctx context.Context, raw []byte, hunks []contextPatchHunk
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
+		fuzzy := false
 		positions := matchingLineRanges(lines, hunk.oldLines)
-		if len(positions) == 0 {
-			return nil, nil, fmt.Errorf("hunk %d context was not found; re-read the file and regenerate the patch", i+1)
-		}
-		if len(positions) > 1 {
+		var at int
+		switch {
+		case len(positions) == 1:
+			at = positions[0]
+		case len(positions) > 1:
 			return nil, nil, fmt.Errorf("hunk %d context matches %d locations; include more surrounding context", i+1, len(positions))
+		case len(positions) == 0:
+			// Exact match failed — try a conservative, whitespace-tolerant fuzzy
+			// match that anchors on a distinctive line. It must be unambiguously
+			// ahead of any rival window and score well, else we still reject.
+			freq := lineFreq(lines)
+			pos, score, totalWeight, hasAnchor, ok := bestMatchPosition(lines, hunk.oldLines, freq)
+			if !ok || !hasAnchor || float64(score) < 0.55*float64(totalWeight) {
+				return nil, nil, fmt.Errorf("hunk %d context was not found; re-read the file and regenerate the patch", i+1)
+			}
+			at = pos
+			fuzzy = true
 		}
-		at := positions[0]
 		replacement := append([]string(nil), hunk.newLines...)
 		next := make([]string, 0, len(lines)-len(hunk.oldLines)+len(replacement))
 		next = append(next, lines[:at]...)
@@ -267,6 +299,7 @@ func applyContextPatch(ctx context.Context, raw []byte, hunks []contextPatchHunk
 			line:      at + 1,
 			additions: hunk.additions,
 			deletions: hunk.deletions,
+			fuzzy:     fuzzy,
 		})
 	}
 
@@ -295,6 +328,90 @@ func matchingLineRanges(lines, target []string) []int {
 		}
 	}
 	return positions
+}
+
+// lineEqForMatch compares two code lines for a fuzzy (whitespace-tolerant)
+// match: trailing whitespace is ignored, but leading indentation is kept so a
+// hunk can't slide onto a differently-indented block.
+func lineEqForMatch(a, b string) bool {
+	return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t")
+}
+
+// lineFreq counts how often each exact line appears, used to weight distinctive
+// (rare) lines higher so a fuzzy match anchors on something unique rather than
+// on a common line like a brace or `return`.
+func lineFreq(lines []string) map[string]int {
+	freq := make(map[string]int)
+	for _, l := range lines {
+		freq[l]++
+	}
+	return freq
+}
+
+// lineDistinctValue returns how strong an anchor a line is: lines that appear
+// once in the file are the most distinctive, repeated lines are weak.
+func lineDistinctValue(line string, freq map[string]int) int {
+	switch {
+	case freq[line] <= 1:
+		return 4
+	case freq[line] <= 2:
+		return 3
+	case freq[line] <= 4:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// bestMatchPosition finds the best fuzzy position for oldLines within lines,
+// scoring each candidate window by weighted line matches. It reports the best
+// position, the weighted score, the total possible weight, whether the best
+// position is anchored on at least one distinctive line, and whether the best
+// is unambiguously ahead of the runner-up (rejecting a tie so we never edit a
+// possibly-wrong block).
+func bestMatchPosition(
+	lines, oldLines []string,
+	freq map[string]int,
+) (pos int, score, totalWeight int, hasAnchor, ok bool) {
+	if len(oldLines) == 0 || len(oldLines) > len(lines) {
+		return 0, 0, 0, false, false
+	}
+	weights := make([]int, len(oldLines))
+	for j, ol := range oldLines {
+		weights[j] = lineDistinctValue(ol, freq)
+		totalWeight += weights[j]
+	}
+	bestPos, best, second := -1, -1, -1
+	bestAnchors := 0
+	for i := 0; i <= len(lines)-len(oldLines); i++ {
+		s := 0
+		anchors := 0
+		for j, ol := range oldLines {
+			if lineEqForMatch(lines[i+j], ol) {
+				s += weights[j]
+				if weights[j] >= 2 {
+					anchors++
+				}
+			}
+		}
+		if s > best {
+			second = best
+			best = s
+			bestPos = i
+			bestAnchors = anchors
+		} else if s > second {
+			second = s
+		}
+	}
+	if bestPos < 0 || best <= 0 {
+		return 0, 0, 0, false, false
+	}
+	// Reject a tie: if a second window scores the same, moving the edit there
+	// could hit the wrong block, so fail and ask for more context instead.
+	if best-second < 1 {
+		return 0, 0, 0, false, false
+	}
+	return bestPos, best, totalWeight, bestAnchors > 0, true
 }
 
 func atomicReplaceIfUnchanged(

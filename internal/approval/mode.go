@@ -1,8 +1,12 @@
 package approval
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"sync"
+
+	"github.com/guyi-a/Interview-Agent/internal/repository"
 )
 
 // Mode names the per-conversation approval policy. The set is closed —
@@ -10,59 +14,62 @@ import (
 type Mode string
 
 const (
-	// ModeDefault: policy.NeedsApproval decides. Every write/edit call
-	// prompts the user. This is the safe default and the mode a fresh
-	// conversation starts in.
-	ModeDefault Mode = "default"
-	// ModeAuto is UX-reserved for a future LLM classifier (krow-agent style:
-	// destructive → deny, LLM allow → auto, otherwise → user). MVP: identical
-	// to ModeDefault at runtime — the middleware log-warns once so the gap
-	// is visible in server output.
-	ModeAuto Mode = "auto"
-	// ModeFullAccess: skip approval entirely. The middleware returns next()
-	// without consulting policy.NeedsApproval. Session-scoped and dropped on
-	// server restart so this "elevation" cannot outlive the process it was
-	// granted in.
-	ModeFullAccess Mode = "full_access"
+	ModeManual      Mode = "manual"
+	ModeAcceptWrite Mode = "accept-write"
+	ModeAuto        Mode = "auto"
 )
 
 func ValidMode(m Mode) bool {
 	switch m {
-	case ModeDefault, ModeAuto, ModeFullAccess:
+	case ModeManual, ModeAcceptWrite, ModeAuto:
 		return true
 	default:
 		return false
 	}
 }
 
-// ModeStore holds the per-conversation approval mode in memory. No DB
-// persistence: an elevated mode ("full_access") should not silently survive
-// a server restart — the user re-electing it after a restart is the audit
-// trail we want.
-//
-// Read-heavy (middleware consults on every tool call), so we take a RWMutex
-// and hand out RLock in Get.
+// ModeStore is a read-through, write-through cache over conversations.
+// Approval modes are a durable conversation preference. Any repository
+// failure falls back to manual rather than widening permissions.
 type ModeStore struct {
 	mu   sync.RWMutex
 	byID map[string]Mode
+	repo *repository.ConversationRepo
 }
 
-func NewModeStore() *ModeStore {
-	return &ModeStore{byID: make(map[string]Mode)}
+func NewModeStore(repo *repository.ConversationRepo) *ModeStore {
+	return &ModeStore{byID: make(map[string]Mode), repo: repo}
 }
 
-// Get returns the mode for convID, or ModeDefault if the conversation has
-// never explicitly chosen one (including after restart).
+// Get returns the persisted mode for convID, or ModeManual on missing/invalid
+// data and repository failures.
 func (s *ModeStore) Get(convID string) Mode {
 	if s == nil || convID == "" {
-		return ModeDefault
+		return ModeManual
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if m, ok := s.byID[convID]; ok {
+		s.mu.RUnlock()
 		return m
 	}
-	return ModeDefault
+	s.mu.RUnlock()
+
+	mode := ModeManual
+	if s.repo != nil {
+		conv, err := s.repo.Get(context.Background(), convID)
+		if err != nil {
+			log.Printf("approval: load mode for %s: %v; falling back to manual", convID, err)
+		} else if conv != nil {
+			candidate := Mode(conv.ApprovalMode)
+			if ValidMode(candidate) {
+				mode = candidate
+			}
+		}
+	}
+	s.mu.Lock()
+	s.byID[convID] = mode
+	s.mu.Unlock()
+	return mode
 }
 
 func (s *ModeStore) Set(convID string, m Mode) error {
@@ -75,11 +82,12 @@ func (s *ModeStore) Set(convID string, m Mode) error {
 	if !ValidMode(m) {
 		return fmt.Errorf("invalid mode %q", string(m))
 	}
+	if s.repo != nil {
+		if err := s.repo.SetApprovalMode(context.Background(), convID, string(m)); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
-	// Setting back to default is stored explicitly so a subsequent Get
-	// doesn't fall through to the ModeDefault fallback branch and drop
-	// the info that the user actively chose default (no observable diff
-	// today, but keeps the store's semantics honest).
 	s.byID[convID] = m
 	s.mu.Unlock()
 	return nil

@@ -19,10 +19,15 @@ type StreamBuffer struct {
 	subscribers []chan []byte
 	status      Status
 	cancel      context.CancelFunc
+	durableSeq  int
 }
 
 func NewBuffer() *StreamBuffer {
-	return &StreamBuffer{status: StatusStreaming}
+	return NewBufferAt(0)
+}
+
+func NewBufferAt(durableSeq int) *StreamBuffer {
+	return &StreamBuffer{status: StatusStreaming, durableSeq: durableSeq}
 }
 
 func (b *StreamBuffer) SetCancel(cancel context.CancelFunc) {
@@ -88,6 +93,32 @@ func (b *StreamBuffer) ClearReplay() {
 	b.mu.Unlock()
 }
 
+// CommitBoundary atomically advances the DB frontier and removes replay data
+// that is now represented by durable messages.
+func (b *StreamBuffer) CommitBoundary(seq int) {
+	b.mu.Lock()
+	if seq > b.durableSeq {
+		b.durableSeq = seq
+	}
+	b.chunks = nil
+	b.mu.Unlock()
+}
+
+func (b *StreamBuffer) DurableSeq() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.durableSeq
+}
+
+type CursorStatus string
+
+const (
+	CursorEqual        CursorStatus = "equal"
+	CursorClientStale  CursorStatus = "client_stale"
+	CursorBufferBehind CursorStatus = "buffer_behind"
+	CursorComplete     CursorStatus = "complete"
+)
+
 func (b *StreamBuffer) Finish() {
 	b.mu.Lock()
 	if b.status == StatusComplete {
@@ -111,13 +142,39 @@ func (b *StreamBuffer) Status() Status {
 }
 
 func (b *StreamBuffer) StreamAll(ctx context.Context) <-chan []byte {
-	out := make(chan []byte, 16)
-
 	b.mu.Lock()
+	out := b.subscribeLocked(ctx)
+	b.mu.Unlock()
+	return out
+}
+
+// StreamFrom compares the client's DB snapshot and registers the subscriber
+// in one critical section. Only an exact cursor match may consume replay.
+func (b *StreamBuffer) StreamFrom(
+	ctx context.Context,
+	afterSeq int,
+) (<-chan []byte, CursorStatus, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.status == StatusComplete {
+		return nil, CursorComplete, b.durableSeq
+	}
+	if afterSeq < b.durableSeq {
+		return nil, CursorClientStale, b.durableSeq
+	}
+	if afterSeq > b.durableSeq {
+		return nil, CursorBufferBehind, b.durableSeq
+	}
+	return b.subscribeLocked(ctx), CursorEqual, b.durableSeq
+}
+
+// subscribeLocked snapshots replay and registers for future frames while the
+// caller holds b.mu, closing the check/subscribe race.
+func (b *StreamBuffer) subscribeLocked(ctx context.Context) <-chan []byte {
+	out := make(chan []byte, 16)
 	history := make([][]byte, len(b.chunks))
 	copy(history, b.chunks)
 	if b.status == StatusComplete {
-		b.mu.Unlock()
 		go func() {
 			defer close(out)
 			for _, c := range history {
@@ -133,7 +190,6 @@ func (b *StreamBuffer) StreamAll(ctx context.Context) <-chan []byte {
 
 	sub := make(chan []byte, 64)
 	b.subscribers = append(b.subscribers, sub)
-	b.mu.Unlock()
 
 	go func() {
 		defer close(out)
@@ -193,9 +249,13 @@ func (m *Manager) Get(id string) *StreamBuffer {
 }
 
 func (m *Manager) Create(id string) *StreamBuffer {
+	return m.CreateAt(id, 0)
+}
+
+func (m *Manager) CreateAt(id string, durableSeq int) *StreamBuffer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	buf := NewBuffer()
+	buf := NewBufferAt(durableSeq)
 	m.buffers[id] = buf
 	return buf
 }

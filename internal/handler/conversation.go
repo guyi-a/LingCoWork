@@ -137,7 +137,13 @@ func (h *ConversationHandler) Messages(c *gin.Context) {
 		return
 	}
 	out := insertCompactionMarker(foldMessages(msgs), h.svc.ActiveCompaction(c.Request.Context(), id))
-	c.JSON(http.StatusOK, gin.H{"messages": out, "context_limit": h.contextLimit})
+	lastSeq := 0
+	if len(msgs) > 0 {
+		lastSeq = msgs[len(msgs)-1].Seq
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"messages": out, "context_limit": h.contextLimit, "last_seq": lastSeq,
+	})
 }
 
 // insertCompactionMarker splices the fold divider into the folded history.

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -34,15 +35,17 @@ func (h *ApprovalHandler) Register(r *gin.Engine) {
 	// would be routed to Decide with interrupt_id="mode".
 	r.GET("/conversations/:id/approval-mode", h.GetMode)
 	r.POST("/conversations/:id/approval-mode", h.SetMode)
+	r.DELETE("/conversations/:id/approval-memory", h.ClearMemory)
 }
 
 type pendingApprovalItem struct {
 	Kind          string `json:"kind"` // approval | question
 	InterruptID   string `json:"interrupt_id"`
 	CallID        string `json:"call_id,omitempty"`
-	Tool          string `json:"tool,omitempty"`           // 仅 kind=approval
-	ArgsJSON      string `json:"args_json,omitempty"`      // kind=approval：工具参数 JSON
-	EffectJSON    string `json:"effect_json,omitempty"`    // kind=approval：审批依据的 effect，老数据为空
+	Tool          string `json:"tool,omitempty"`        // 仅 kind=approval
+	ArgsJSON      string `json:"args_json,omitempty"`   // kind=approval：工具参数 JSON
+	EffectJSON    string `json:"effect_json,omitempty"` // kind=approval：审批依据的 effect，老数据为空
+	Rememberable  bool   `json:"rememberable,omitempty"`
 	QuestionsJSON string `json:"questions_json,omitempty"` // kind=question：[]hitl.Question 的 JSON
 	PlanJSON      string `json:"plan_json,omitempty"`      // kind=plan：workplan.Snapshot JSON
 }
@@ -70,6 +73,9 @@ func (h *ApprovalHandler) Pending(c *gin.Context) {
 			row.Tool = it.Tool
 			row.ArgsJSON = it.Args
 			row.EffectJSON = it.EffectJSON
+			if e, ok := approval.ParseEffect(it.EffectJSON); ok {
+				_, row.Rememberable = approval.Fingerprint(e, it.Args)
+			}
 		}
 		out = append(out, row)
 	}
@@ -82,6 +88,9 @@ type approvalRequest struct {
 	// Reason is optional; only meaningful when Decision == "deny". Surfaced
 	// back to the model so it can adjust rather than silently retry.
 	Reason string `json:"reason"`
+	// Scope is "once" or "session". Session grants are exact-effect,
+	// in-process conveniences and are rejected for safety-wall operations.
+	Scope string `json:"scope"`
 }
 
 func (h *ApprovalHandler) Decide(c *gin.Context) {
@@ -95,9 +104,18 @@ func (h *ApprovalHandler) Decide(c *gin.Context) {
 	}
 
 	dec := approval.Decision{}
+	remember := false
 	switch req.Decision {
 	case "approve":
 		dec.Approved = true
+		switch req.Scope {
+		case "", "once":
+		case "session":
+			remember = true
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": `scope must be "once" or "session"`})
+			return
+		}
 	case "deny":
 		dec.Approved = false
 		dec.Reason = req.Reason
@@ -106,8 +124,12 @@ func (h *ApprovalHandler) Decide(c *gin.Context) {
 		return
 	}
 
-	found, resumed, err := h.chat.Resume(convID, interruptID, dec)
+	found, resumed, err := h.chat.Resume(convID, interruptID, dec, remember)
 	if err != nil {
+		if errors.Is(err, service.ErrApprovalNotRememberable) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -172,11 +194,14 @@ func (h *ApprovalHandler) AnswerQuestion(c *gin.Context) {
 
 // GetMode returns the current approval mode for a conversation. Fresh
 // conversations (and conversations that outlived a server restart) report
-// "default" — the mode store is in-memory by design.
+// "manual".
 func (h *ApprovalHandler) GetMode(c *gin.Context) {
 	convID := c.Param("id")
 	m := h.chat.GetApprovalMode(convID)
-	c.JSON(http.StatusOK, gin.H{"mode": string(m)})
+	c.JSON(http.StatusOK, gin.H{
+		"mode":             string(m),
+		"remembered_count": h.chat.ApprovalMemoryCount(convID),
+	})
 }
 
 type approvalModeRequest struct {
@@ -184,10 +209,11 @@ type approvalModeRequest struct {
 }
 
 // SetMode changes the approval mode. Any unknown mode returns 400 without
-// touching store state — the mode set is closed (default / auto / full_access).
+// touching store state — the mode set is closed
+// (manual / accept-write / auto).
 // The change takes effect immediately for subsequent tool calls; pending
 // approvals already awaiting a user decision are NOT auto-approved by a
-// switch to full_access — the user still has to answer them.
+// switch to auto — the user still has to answer them.
 func (h *ApprovalHandler) SetMode(c *gin.Context) {
 	convID := c.Param("id")
 	var req approvalModeRequest
@@ -199,5 +225,10 @@ func (h *ApprovalHandler) SetMode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *ApprovalHandler) ClearMemory(c *gin.Context) {
+	h.chat.ClearApprovalMemory(c.Param("id"))
 	c.Status(http.StatusNoContent)
 }

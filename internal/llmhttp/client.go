@@ -8,8 +8,7 @@
 // separate from the main model, and (c) 80 lines of net/http with no
 // external dep beats another versioned dependency.
 //
-// Call sites: internal/approval (auto-mode classifier),
-// internal/compaction (history summarizer).
+// Call site: internal/compaction (history summarizer).
 package llmhttp
 
 import (
@@ -71,9 +70,7 @@ type response struct {
 
 // Distinct error types let the caller distinguish "no key configured" (a
 // deployment issue) from "endpoint timed out" (a runtime blip) from "the
-// endpoint returned garbage" (probably a protocol version mismatch). The
-// approval classifier maps each to a different reason string in its audit
-// log.
+// endpoint returned garbage" (probably a protocol version mismatch).
 var (
 	ErrNoAPIKey    = errors.New("llmhttp: no api key configured")
 	ErrTimeout     = errors.New("llmhttp: request timed out")

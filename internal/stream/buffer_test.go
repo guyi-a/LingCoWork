@@ -37,6 +37,47 @@ func TestBufferSeparatesReplayableAndLiveOnlyEvents(t *testing.T) {
 	}
 }
 
+func TestBufferCursorRequiresExactDurableSequence(t *testing.T) {
+	buf := NewBufferAt(5)
+	buf.Append([]byte("partial"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	if ch, status, durable := buf.StreamFrom(ctx, 4); ch != nil ||
+		status != CursorClientStale || durable != 5 {
+		t.Fatalf("stale = ch:%v status:%s durable:%d", ch, status, durable)
+	}
+	if ch, status, durable := buf.StreamFrom(ctx, 6); ch != nil ||
+		status != CursorBufferBehind || durable != 5 {
+		t.Fatalf("ahead = ch:%v status:%s durable:%d", ch, status, durable)
+	}
+	ch, status, durable := buf.StreamFrom(ctx, 5)
+	if status != CursorEqual || durable != 5 {
+		t.Fatalf("equal status:%s durable:%d", status, durable)
+	}
+	if got := string(receive(t, ch)); got != "partial" {
+		t.Fatalf("partial=%q", got)
+	}
+
+	buf.CommitBoundary(7)
+	if buf.DurableSeq() != 7 {
+		t.Fatalf("durable=%d", buf.DurableSeq())
+	}
+	buf.PublishLive([]byte("live"))
+	if got := string(receive(t, ch)); got != "live" {
+		t.Fatalf("live=%q", got)
+	}
+	fresh, status, _ := buf.StreamFrom(ctx, 7)
+	if status != CursorEqual {
+		t.Fatalf("fresh status=%s", status)
+	}
+	select {
+	case got := <-fresh:
+		t.Fatalf("fresh replayed durable frame %q", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
 func receive(t *testing.T, ch <-chan []byte) []byte {
 	t.Helper()
 	select {

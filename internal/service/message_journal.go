@@ -20,6 +20,7 @@ type messageJournal struct {
 	runID                    string
 	assistantOrdinal         int
 	lastAssistantID          uint64
+	lastAssistantSeq         int
 	lastAssistantFingerprint string
 	lastEventWasAssistant    bool
 }
@@ -36,16 +37,16 @@ func newMessageJournal(
 func (j *messageJournal) AppendAssistant(
 	ctx context.Context,
 	record stream.AssistantTurnRecord,
-) error {
+) (int, bool, error) {
 	if record.Content == "" && record.ReasoningContent == "" &&
 		len(record.ToolCalls) == 0 {
-		return nil
+		return 0, false, nil
 	}
 	rawCalls := ""
 	if len(record.ToolCalls) > 0 {
 		data, err := json.Marshal(record.ToolCalls)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		rawCalls = string(data)
 	}
@@ -53,7 +54,7 @@ func (j *messageJournal) AppendAssistant(
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.lastEventWasAssistant && j.lastAssistantFingerprint == fingerprint {
-		return nil
+		return j.lastAssistantSeq, false, nil
 	}
 	j.assistantOrdinal++
 	key := fmt.Sprintf("assistant:%s:%d", j.runID, j.assistantOrdinal)
@@ -69,21 +70,23 @@ func (j *messageJournal) AppendAssistant(
 	}
 	persistCtx, cancel := journalContext(ctx)
 	defer cancel()
-	if _, err := j.repo.AppendEvent(persistCtx, row); err != nil {
-		return err
+	created, err := j.repo.AppendEvent(persistCtx, row)
+	if err != nil {
+		return 0, false, err
 	}
 	j.lastAssistantID = row.ID
+	j.lastAssistantSeq = row.Seq
 	j.lastAssistantFingerprint = fingerprint
 	j.lastEventWasAssistant = true
-	return nil
+	return row.Seq, created, nil
 }
 
 func (j *messageJournal) AppendToolResult(
 	ctx context.Context,
 	record stream.ToolResultRecord,
-) error {
+) (int, bool, error) {
 	if record.CallID == "" {
-		return nil
+		return 0, false, nil
 	}
 	j.mu.Lock()
 	j.lastEventWasAssistant = false
@@ -123,8 +126,8 @@ func (j *messageJournal) AppendToolResult(
 	}
 	persistCtx, cancel := journalContext(ctx)
 	defer cancel()
-	_, err := j.repo.AppendEvent(persistCtx, row)
-	return err
+	created, err := j.repo.AppendEvent(persistCtx, row)
+	return row.Seq, created, err
 }
 
 func (j *messageJournal) AppendPartialAssistant(
@@ -134,9 +137,10 @@ func (j *messageJournal) AppendPartialAssistant(
 	if content == "" && reasoning == "" {
 		return nil
 	}
-	return j.AppendAssistant(ctx, stream.AssistantTurnRecord{
+	_, _, err := j.AppendAssistant(ctx, stream.AssistantTurnRecord{
 		Content: content, ReasoningContent: reasoning,
 	})
+	return err
 }
 
 func (j *messageJournal) UpdateLastAssistant(

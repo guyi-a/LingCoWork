@@ -6,11 +6,9 @@ import {
   type ApprovalMode,
 } from "@/lib/api";
 
-// Approval-mode store, keyed by conversation id. Backend is the source of
-// truth (in-memory on the server too — see approval/mode.go). We cache what
-// we last loaded from the server and mirror optimistic Set writes, but on
-// mount we always re-load from the server so a page refresh reflects any
-// out-of-band changes.
+// Approval-mode store, keyed by conversation id. The backend persists the
+// mode on the conversation; this cache mirrors optimistic writes and reloads
+// on mount so refreshes and out-of-band changes converge.
 interface ApprovalModeStore {
   byConv: Record<string, ApprovalMode>;
   set: (convID: string, mode: ApprovalMode) => void;
@@ -30,12 +28,12 @@ export const useApprovalModeStore = create<ApprovalModeStore>((set, get) => ({
 }));
 
 // useApprovalMode: convenient hook that (a) reads the cached mode with
-// "default" as fallback, (b) fetches from the server on mount so the
+// "manual" as fallback, (b) fetches from the server on mount so the
 // dropdown reflects backend truth, and (c) exposes a change() that writes
 // through — optimistic local, then POST, revert on failure.
 export function useApprovalMode(conversationID: string) {
   const cached = useApprovalModeStore(
-    (s) => s.byConv[conversationID] ?? "default",
+    (s) => s.byConv[conversationID] ?? "manual",
   );
   const write = useApprovalModeStore((s) => s.set);
   const [pending, setPending] = useState(false);

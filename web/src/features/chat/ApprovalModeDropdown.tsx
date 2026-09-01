@@ -4,17 +4,6 @@ import { useApprovalMode } from "@/features/chat/approval-mode-store";
 import type { ApprovalMode } from "@/lib/api";
 
 // The modes exposed to the user. Order here is the order in the menu.
-//
-// Deliberately a subset of backend approval.Mode: "auto" (rule fast path plus
-// an LLM classifier) still exists server-side but is not offered here. Letting
-// a model decide what needs a human is a bigger promise than this product is
-// ready to make, and every call that misses the fast path costs an extra LLM
-// round trip. The backend keeps it so the choice stays reversible.
-//
-// Colour discipline: we deliberately avoid tinting (blue/amber/etc.) so the
-// dropdown reads as a neutral setting, not a status indicator. Escalation to
-// full_access is signalled by inverting the chip (bg-ink text-paper), which
-// stands out without introducing a new hue.
 const OPTIONS: {
   value: ApprovalMode;
   label: string;
@@ -22,15 +11,21 @@ const OPTIONS: {
   icon: (className?: string) => ReactElement;
 }[] = [
   {
-    value: "default",
-    label: "默认权限",
-    hint: "每次写/改文件都问",
+    value: "manual",
+    label: "手动审批",
+    hint: "无副作用操作直行，其余逐次询问",
     icon: (c) => <ShieldCheckIcon className={c} />,
   },
   {
-    value: "full_access",
-    label: "完全放行",
-    hint: "跳过所有审批，仅本会话",
+    value: "accept-write",
+    label: "接受写入",
+    hint: "工作区写入和公网访问直行，命令与外部访问仍询问",
+    icon: (c) => <ShieldCheckIcon className={c} />,
+  },
+  {
+    value: "auto",
+    label: "自动审批",
+    hint: "除破坏性、未知和敏感操作外均自动允许",
     icon: (c) => <ShieldOffIcon className={c} />,
   },
 ];
@@ -81,8 +76,7 @@ export function ApprovalModeDropdown({
         className={cn(
           "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium",
           "border transition-colors",
-          // full_access = inverted chip so escalation is visible without colour
-          mode === "full_access"
+          mode === "auto"
             ? "border-ink bg-ink text-paper hover:opacity-90"
             : "border-rule/60 bg-paper text-ink hover:bg-subtle",
           pending && "opacity-60 pointer-events-none",

@@ -245,6 +245,16 @@ func (r *MessageRepo) LatestUserSeq(ctx context.Context, conversationID string) 
 	return seq, err
 }
 
+func (r *MessageRepo) MaxSeq(ctx context.Context, conversationID string) (int, error) {
+	var seq int
+	err := r.db.WithContext(ctx).
+		Model(&model.Message{}).
+		Where("conversation_id = ?", conversationID).
+		Select("COALESCE(MAX(seq), 0)").
+		Scan(&seq).Error
+	return seq, err
+}
+
 // List returns all messages of a conversation in seq order.
 func (r *MessageRepo) List(ctx context.Context, conversationID string) ([]model.Message, error) {
 	var out []model.Message

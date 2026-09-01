@@ -26,23 +26,25 @@ import (
 )
 
 var (
-	ErrWorkspaceRequired = errors.New("a workspace project is required")
-	ErrProjectNotFound   = errors.New("workspace project not found")
-	ErrProjectMismatch   = errors.New("conversation is already bound to another project")
-	ErrRunActive         = errors.New("cannot change agent mode while a run or user interaction is active")
+	ErrWorkspaceRequired       = errors.New("a workspace project is required")
+	ErrProjectNotFound         = errors.New("workspace project not found")
+	ErrProjectMismatch         = errors.New("conversation is already bound to another project")
+	ErrRunActive               = errors.New("cannot change agent mode while a run or user interaction is active")
+	ErrApprovalNotRememberable = errors.New("this approval cannot be remembered")
 )
 
 type ChatService struct {
-	runner        *adk.Runner
-	rootName      string
-	manager       *stream.Manager
-	convRepo      *repository.ConversationRepo
-	msgRepo       *repository.MessageRepo
-	projectRepo   *repository.ProjectRepo
-	instructions  *instructions.Store
-	pending       *approval.PendingStore
-	approvalModes *approval.ModeStore
-	multimodal    bool
+	runner         *adk.Runner
+	rootName       string
+	manager        *stream.Manager
+	convRepo       *repository.ConversationRepo
+	msgRepo        *repository.MessageRepo
+	projectRepo    *repository.ProjectRepo
+	instructions   *instructions.Store
+	pending        *approval.PendingStore
+	approvalModes  *approval.ModeStore
+	approvalMemory *approval.Memory
+	multimodal     bool
 	// compactor is nil when context compaction isn't configured; all of its
 	// methods tolerate a nil receiver, so call sites don't branch.
 	compactor *compaction.Compactor
@@ -92,21 +94,23 @@ func NewChatService(
 	instructionStore *instructions.Store,
 	pending *approval.PendingStore,
 	approvalModes *approval.ModeStore,
+	approvalMemory *approval.Memory,
 	multimodal bool,
 	compactor *compaction.Compactor,
 ) *ChatService {
 	return &ChatService{
-		runner:        runner,
-		rootName:      rootName,
-		manager:       manager,
-		convRepo:      convRepo,
-		msgRepo:       msgRepo,
-		projectRepo:   projectRepo,
-		instructions:  instructionStore,
-		pending:       pending,
-		approvalModes: approvalModes,
-		multimodal:    multimodal,
-		compactor:     compactor,
+		runner:         runner,
+		rootName:       rootName,
+		manager:        manager,
+		convRepo:       convRepo,
+		msgRepo:        msgRepo,
+		projectRepo:    projectRepo,
+		instructions:   instructionStore,
+		pending:        pending,
+		approvalModes:  approvalModes,
+		approvalMemory: approvalMemory,
+		multimodal:     multimodal,
+		compactor:      compactor,
 	}
 }
 
@@ -116,6 +120,31 @@ func (s *ChatService) Get(id string) *stream.StreamBuffer {
 
 func (s *ChatService) IsStreaming(id string) bool {
 	return s.manager.IsStreaming(id)
+}
+
+func (s *ChatService) ResumeStream(
+	ctx context.Context,
+	id string,
+	afterSeq int,
+) (<-chan []byte, stream.CursorStatus, int, error) {
+	if buf := s.manager.Get(id); buf != nil {
+		ch, status, durableSeq := buf.StreamFrom(ctx, afterSeq)
+		if status != stream.CursorComplete {
+			return ch, status, durableSeq, nil
+		}
+	}
+	maxSeq, err := s.msgRepo.MaxSeq(ctx, id)
+	if err != nil {
+		return nil, stream.CursorComplete, 0, err
+	}
+	switch {
+	case afterSeq < maxSeq:
+		return nil, stream.CursorClientStale, maxSeq, nil
+	case afterSeq > maxSeq:
+		return nil, stream.CursorBufferBehind, maxSeq, nil
+	default:
+		return nil, stream.CursorComplete, maxSeq, nil
+	}
 }
 
 func (s *ChatService) Cancel(id string) bool {
@@ -170,11 +199,18 @@ func (s *ChatService) prepareUserMessage(userMsg, instructionName string) (prepa
 //   - kicks off the ADK Runner in a goroutine, persists assistant reply when done
 func (s *ChatService) Start(
 	ctx context.Context,
-	id, userMsg, instructionName, projectID, rawMode string,
+	id, userMsg, instructionName, projectID, rawMode, rawApprovalMode string,
 ) (*stream.StreamBuffer, error) {
 	mode, err := agentmode.Parse(rawMode)
 	if err != nil {
 		return nil, err
+	}
+	var requestedApprovalMode approval.Mode
+	if rawApprovalMode != "" {
+		requestedApprovalMode = approval.Mode(rawApprovalMode)
+		if !approval.ValidMode(requestedApprovalMode) {
+			return nil, fmt.Errorf("invalid approval mode %q", rawApprovalMode)
+		}
 	}
 	prepared, err := s.prepareUserMessage(userMsg, instructionName)
 	if err != nil {
@@ -218,6 +254,11 @@ func (s *ChatService) Start(
 			return nil, err
 		}
 	}
+	if requestedApprovalMode != "" {
+		if err := s.approvalModes.Set(id, requestedApprovalMode); err != nil {
+			return nil, err
+		}
+	}
 
 	// Loaded before the new user row is written, so `prior` is exactly the
 	// completed turns. Compaction folds only what's in here, which is why
@@ -227,12 +268,13 @@ func (s *ChatService) Start(
 		return nil, err
 	}
 
-	if err := s.msgRepo.Append(ctx, &model.Message{
+	userRow := &model.Message{
 		ConversationID: id,
 		Role:           string(schema.User),
 		Content:        prepared.content,
 		Extra:          prepared.extra,
-	}); err != nil {
+	}
+	if err := s.msgRepo.Append(ctx, userRow); err != nil {
 		return nil, err
 	}
 
@@ -242,7 +284,7 @@ func (s *ChatService) Start(
 
 	workspaceCtx := s.workspaceContext(ctx, id)
 
-	buf := s.manager.Create(id)
+	buf := s.manager.CreateAt(id, userRow.Seq)
 	runCtx, cancel := context.WithCancel(context.Background())
 	buf.SetCancel(cancel)
 
@@ -294,7 +336,26 @@ func (s *ChatService) Start(
 func (s *ChatService) Resume(
 	convID, interruptID string,
 	dec approval.Decision,
+	remember bool,
 ) (found, resumed bool, err error) {
+	item, found := s.pending.Get(convID, interruptID)
+	if !found {
+		return false, false, nil
+	}
+	if dec.Approved {
+		if e, ok := approval.ParseEffect(item.EffectJSON); ok {
+			dec.EffectDigest = approval.EffectDigest(e)
+			if remember {
+				fingerprint, rememberable := approval.Fingerprint(e, item.Args)
+				if !rememberable {
+					return true, false, ErrApprovalNotRememberable
+				}
+				s.approvalMemory.Remember(convID, fingerprint)
+			}
+		} else if remember {
+			return true, false, ErrApprovalNotRememberable
+		}
+	}
 	checkpointID, targets, found, ready := s.pending.Resolve(convID, interruptID, dec)
 	if !found {
 		return false, false, nil
@@ -304,7 +365,9 @@ func (s *ChatService) Resume(
 		return true, false, nil
 	}
 
-	s.startResume(convID, checkpointID, targets)
+	if err := s.startResume(convID, checkpointID, targets); err != nil {
+		return true, false, err
+	}
 	return true, true, nil
 }
 
@@ -324,7 +387,9 @@ func (s *ChatService) ResumeQuestion(
 		return true, false, nil
 	}
 
-	s.startResume(convID, checkpointID, targets)
+	if err := s.startResume(convID, checkpointID, targets); err != nil {
+		return true, false, err
+	}
 	return true, true, nil
 }
 
@@ -345,7 +410,9 @@ func (s *ChatService) ResumePlan(
 			return true, false, err
 		}
 	}
-	s.startResume(convID, checkpointID, targets)
+	if err := s.startResume(convID, checkpointID, targets); err != nil {
+		return true, false, err
+	}
 	return true, true, nil
 }
 
@@ -355,14 +422,19 @@ func (s *ChatService) ResumePlan(
 func (s *ChatService) startResume(
 	convID, checkpointID string,
 	targets map[string]any,
-) {
+) error {
 	s.applyWaitingStatus(convID, "running")
 
-	buf := s.manager.Create(convID)
+	maxSeq, err := s.msgRepo.MaxSeq(context.Background(), convID)
+	if err != nil {
+		return err
+	}
+	buf := s.manager.CreateAt(convID, maxSeq)
 	runCtx, cancel := context.WithCancel(context.Background())
 	buf.SetCancel(cancel)
 
 	go s.resumeAgent(runCtx, convID, checkpointID, targets, buf)
+	return nil
 }
 
 // applyWaitingStatus 根据当前 pending 队列的队首 kind 更新会话状态：
@@ -394,16 +466,28 @@ func (s *ChatService) PendingApprovals(convID string) []approval.PendingItem {
 	return s.pending.List(convID)
 }
 
-// GetApprovalMode returns the per-conversation approval mode, defaulting to
-// approval.ModeDefault when the conversation has never explicitly set one
-// (including after a server restart, which is intentional — see mode.go).
+// GetApprovalMode returns the durable per-conversation approval mode,
+// defaulting fail-safe to manual.
 func (s *ChatService) GetApprovalMode(convID string) approval.Mode {
 	return s.approvalModes.Get(convID)
 }
 
 // SetApprovalMode validates and stores the mode. Called from the HTTP handler.
 func (s *ChatService) SetApprovalMode(convID string, m approval.Mode) error {
+	if s.convRepo != nil {
+		if err := s.convRepo.Upsert(context.Background(), convID); err != nil {
+			return err
+		}
+	}
 	return s.approvalModes.Set(convID, m)
+}
+
+func (s *ChatService) ApprovalMemoryCount(convID string) int {
+	return s.approvalMemory.Count(convID)
+}
+
+func (s *ChatService) ClearApprovalMemory(convID string) {
+	s.approvalMemory.Clear(convID)
 }
 
 func (s *ChatService) workspaceContext(ctx context.Context, convID string) string {
@@ -423,6 +507,7 @@ func (s *ChatService) workspaceContext(ctx context.Context, convID string) strin
 
 func (s *ChatService) runAgent(ctx context.Context, convID string, msgs []*schema.Message, buf *stream.StreamBuffer) {
 	ctx = contextkey.WithConversationID(ctx, convID)
+	ctx = approval.WithMemorySnapshot(ctx, s.approvalMemory.Allowed(convID))
 	ctx = contextkey.WithBuffer(ctx, buf)
 	ctx = toolerr.WithRegistry(ctx, toolerr.NewRegistry())
 
@@ -448,6 +533,7 @@ func (s *ChatService) resumeAgent(
 	buf *stream.StreamBuffer,
 ) {
 	ctx = contextkey.WithConversationID(ctx, convID)
+	ctx = approval.WithMemorySnapshot(ctx, s.approvalMemory.Allowed(convID))
 	ctx = contextkey.WithBuffer(ctx, buf)
 	ctx = toolerr.WithRegistry(ctx, toolerr.NewRegistry())
 
@@ -589,7 +675,8 @@ func (s *ChatService) updateJournalMetadata(
 		return
 	}
 	extra := ""
-	if subEvents := collector.SubEvents(); len(subEvents) > 0 {
+	subEvents, version, dirty := collector.SubEventsForFlush()
+	if dirty && len(subEvents) > 0 {
 		if data, err := json.Marshal(map[string]any{"sub_events": subEvents}); err == nil {
 			extra = string(data)
 		}
@@ -598,6 +685,10 @@ func (s *ChatService) updateJournalMetadata(
 		context.Background(), collector.TotalTokens(), extra,
 	); err != nil {
 		log.Printf("update journal metadata (conv=%s): %v", convID, err)
+		return
+	}
+	if dirty {
+		collector.MarkSubEventsFlushed(version)
 	}
 }
 
@@ -633,7 +724,7 @@ func (s *ChatService) persistInterruptState(
 		if _, waiting := pendingCalls[call.ID]; waiting {
 			continue
 		}
-		if err := journal.AppendToolResult(context.Background(), stream.ToolResultRecord{
+		if _, _, err := journal.AppendToolResult(context.Background(), stream.ToolResultRecord{
 			CallID: call.ID, Name: call.Name, OK: false,
 			Content: stream.CanceledPlaceholderPrefix + " tool did not run",
 			Error:   reason, Cancelled: true,

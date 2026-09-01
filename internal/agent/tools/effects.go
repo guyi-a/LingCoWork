@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/approval"
 	"github.com/guyi-a/Interview-Agent/internal/effect"
 	"github.com/guyi-a/Interview-Agent/internal/memory"
+	"github.com/guyi-a/Interview-Agent/internal/webfetch"
 )
 
 // This file is the single place that says what each builtin tool DOES. The
@@ -146,6 +148,37 @@ func scopeOfResolvedPath(workspaceRoot, absPath string) effect.Scope {
 	return effect.ScopeWorkspace
 }
 
+// canonicalEffectPath resolves the existing target or its nearest existing
+// parent and appends any not-yet-created suffix. The tool performs its own
+// scope resolution again at execution time; recording this canonical target
+// in the effect lets the approval digest detect a symlink retargeted between
+// review and execution.
+func canonicalEffectPath(path string) string {
+	path = filepath.Clean(path)
+	current := path
+	var suffix []string
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, resolveErr := filepath.EvalSymlinks(current)
+			if resolveErr != nil {
+				return path
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved)
+		} else if !os.IsNotExist(err) {
+			return path
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
 // readTarget resolves a path the way the read-side tools do and reports where
 // it lands.
 //
@@ -163,7 +196,8 @@ func (d *fsDeps) readTarget(ctx context.Context, path string) (string, effect.Sc
 	if err != nil {
 		return path, effect.ScopeWorkspace, "path does not resolve: " + err.Error(), ws
 	}
-	return abs, scopeOfResolvedPath(ws, abs), "", ws
+	canonical := canonicalEffectPath(abs)
+	return canonical, scopeOfResolvedPath(ws, canonical), "", ws
 }
 
 // writeTarget resolves a path the way the confined write tools do. Unlike
@@ -180,7 +214,7 @@ func (d *fsDeps) writeTarget(ctx context.Context, path string) (string, effect.S
 	if err != nil {
 		return path, effect.ScopeExternal, "outside the workspace: " + err.Error(), ws
 	}
-	return abs, effect.ScopeWorkspace, "", ws
+	return canonicalEffectPath(abs), effect.ScopeWorkspace, "", ws
 }
 
 // writeKind reports which consequence a write to abs represents: ordinary file
@@ -307,8 +341,8 @@ func (d *fsDeps) chunkedWriteEffect() effect.Deriver {
 
 // rmEffect marks a delete irreversible on the same terms as the shell wall:
 // a recursive remove, or one aimed at a well-known dangerous path. A plain
-// single-file delete stays ordinary, so full_access users don't get a prompt
-// per file — it still needs approval in the other two modes.
+// single-file delete stays ordinary, so auto mode does not prompt per file —
+// it still needs approval in manual and accept-write.
 func (d *fsDeps) rmEffect() effect.Deriver {
 	return func(ctx context.Context, argsJSON string) (effect.Effect, error) {
 		var in RmInput
@@ -359,6 +393,10 @@ func (d *fsDeps) transferEffect(deletesSource bool) effect.Deriver {
 		if writeKind(ws, dstAbs) == effect.KindMemoryWrite {
 			kind = effect.KindMemoryWrite
 		}
+		operation := "copy"
+		if deletesSource {
+			operation = "move"
+		}
 		return effect.Effect{
 			Kind:      kind,
 			Scope:     effect.WorstScope(srcScope, dstScope),
@@ -366,9 +404,10 @@ func (d *fsDeps) transferEffect(deletesSource bool) effect.Deriver {
 			PathScope: srcScope,
 			DestPath:  dstAbs,
 			DestScope: dstScope,
+			Operation: operation,
 			// mv unlinks the source, but a move is recoverable by moving it
 			// back. Only genuinely unrecoverable operations get the flag that
-			// overrides full_access.
+			// overrides auto.
 			Note: joinNotes(srcNote, dstNote),
 		}, nil
 	}
@@ -446,7 +485,11 @@ func webFetchEffect(_ context.Context, argsJSON string) (effect.Effect, error) {
 	if err := unmarshalArgs(argsJSON, &in); err != nil {
 		return effect.Effect{}, err
 	}
-	return effect.Effect{Kind: effect.KindNetwork, URL: in.URL}, nil
+	return effect.Effect{
+		Kind:        effect.KindNetwork,
+		URL:         in.URL,
+		PrivateHost: webfetch.IsPrivateURL(in.URL),
+	}, nil
 }
 
 func loadSkillEffect(_ context.Context, argsJSON string) (effect.Effect, error) {

@@ -29,40 +29,19 @@ type LLMConfig struct {
 	Multimodal bool
 }
 
-// ApprovalFastConfig points at an OpenAI-compatible endpoint used by the
-// auto-mode approval classifier. Shares DEEPSEEK_API_KEY with the main LLM
-// by default but keeps its own base URL / model so the classifier can stay
-// on a cheaper non-thinking model. Missing APIKey disables the classifier
-// entirely — auto mode then only has the fast-path rules to work with.
-type ApprovalFastConfig struct {
-	APIKey    string
-	BaseURL   string
-	Model     string
-	MaxTokens int
-	// TimeoutSeconds bounds a single classifier call. Anything over this
-	// deadline is treated as failure → deny → human review (safe default).
-	TimeoutSeconds int
-}
-
-func (c ApprovalFastConfig) Enabled() bool {
-	return c.APIKey != "" && c.BaseURL != "" && c.Model != ""
-}
-
 // CompactionConfig drives cross-turn context compaction: when a
 // conversation's estimated context crosses ThresholdTokens, the history is
 // folded into a summary before the next run starts.
 //
-// Shares DEEPSEEK_API_KEY like ApprovalFastConfig, but keeps its own base
-// URL / model so summarization can be pointed at a cheaper endpoint. Missing
-// APIKey disables compaction entirely — conversations then behave exactly as
-// they did before the feature existed.
+// It keeps its own base URL / model so summarization can be pointed at a
+// cheaper endpoint. Missing APIKey disables compaction entirely.
 type CompactionConfig struct {
 	APIKey    string
 	BaseURL   string
 	Model     string
 	MaxTokens int
-	// TimeoutSeconds bounds one summarization call. Generous compared to the
-	// approval classifier: the request carries an entire conversation.
+	// TimeoutSeconds bounds one summarization call; the request can carry an
+	// entire conversation.
 	TimeoutSeconds int
 
 	// WindowNominalTokens is the model's advertised context window and
@@ -137,20 +116,17 @@ func (c SearchConfig) Enabled() bool {
 }
 
 type Config struct {
-	LLM          LLMConfig
-	ApprovalFast ApprovalFastConfig
-	Compaction   CompactionConfig
-	Embedding    EmbeddingConfig
-	Rag          RagConfig
-	Search       SearchConfig
+	LLM        LLMConfig
+	Compaction CompactionConfig
+	Embedding  EmbeddingConfig
+	Rag        RagConfig
+	Search     SearchConfig
 }
 
 func Load() (*Config, error) {
 	loadDotenv()
 
 	deepseekKey := os.Getenv("DEEPSEEK_API_KEY")
-	// Optional override so main agent and classifier can use different keys
-	// later without renaming the shared default.
 	llmKey := getEnv("LLM_API_KEY", deepseekKey)
 	// COMPACTION_ENABLED=false is the off switch; otherwise compaction runs
 	// whenever there's a key to summarize with.
@@ -169,13 +145,6 @@ func Load() (*Config, error) {
 			EnableThinking:  getEnvBool("LLM_ENABLE_THINKING", true),
 			ReasoningEffort: getEnv("LLM_REASONING_EFFORT", "high"),
 			Multimodal:      getEnvBool("LLM_MULTIMODAL", isVisionModel(llmModel)),
-		},
-		ApprovalFast: ApprovalFastConfig{
-			APIKey:         deepseekKey,
-			BaseURL:        getEnv("APPROVAL_FAST_BASE_URL", "https://api.deepseek.com"),
-			Model:          getEnv("APPROVAL_FAST_MODEL", "deepseek-v4-flash"),
-			MaxTokens:      getEnvInt("APPROVAL_FAST_MAX_TOKENS", 512),
-			TimeoutSeconds: getEnvInt("APPROVAL_FAST_TIMEOUT", 15),
 		},
 		Compaction: CompactionConfig{
 			APIKey:         compactionKey,

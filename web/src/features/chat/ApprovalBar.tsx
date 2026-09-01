@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useApprovalStore, type PendingApproval } from "@/features/chat/approval-store";
+import type { ApprovalScope } from "@/lib/api";
 
 // Stable empty array — avoids a fresh `[]` from the selector on every render,
 // which would give useSyncExternalStore a new reference each read and hang
@@ -32,6 +33,7 @@ const EFFECT_TITLES: Record<string, string> = {
   "filesystem-write": "写入文件",
   "filesystem-structure": "创建目录",
   "filesystem-transfer": "移动 / 复制文件",
+  "memory-write": "写入长期记忆",
   "process-exec": "执行命令",
   "network-request": "访问网络",
   "skill-load": "加载技能",
@@ -77,6 +79,21 @@ function parseEffect(effectJson: string | undefined): Effect | null {
   } catch {
     return null;
   }
+}
+
+function canRememberApproval(
+  rememberable: boolean | undefined,
+  effect: Effect | null,
+): boolean {
+  if (
+    effect?.kind === "unknown" ||
+    effect?.kind === "memory-write" ||
+    effect?.destructive ||
+    effect?.classification === "destructive"
+  ) {
+    return false;
+  }
+  return rememberable === true;
 }
 
 // Describes a call from its effect alone, with no knowledge of the tool. This
@@ -217,6 +234,7 @@ export function ApprovalBar({
     () => parseEffect(current?.effectJson),
     [current?.effectJson],
   );
+  const rememberable = canRememberApproval(current?.rememberable, effect);
   // The per-tool summary comes first for the builtins: it's tuned to each
   // one's arguments and reads better than the generic form. The effect covers
   // everything else, including tools this build has never seen.
@@ -244,7 +262,11 @@ export function ApprovalBar({
 
   if (!current) return null;
 
-  const submit = async (decision: "approve" | "deny", withReason?: string) => {
+  const submit = async (
+    decision: "approve" | "deny",
+    scope: ApprovalScope,
+    withReason?: string,
+  ) => {
     if (busy) return;
     setBusy(true);
     try {
@@ -252,6 +274,7 @@ export function ApprovalBar({
         conversationID,
         current.interruptId,
         decision,
+        scope,
         withReason,
       );
       if (result.handled) {
@@ -267,13 +290,14 @@ export function ApprovalBar({
     }
   };
 
-  const onApprove = () => submit("approve");
+  const onApproveOnce = () => submit("approve", "once");
+  const onApproveSession = () => submit("approve", "session");
   const onStartDeny = () => setMode("denying");
   const onCancelDeny = () => {
     setMode("idle");
     setReason("");
   };
-  const onConfirmDeny = () => submit("deny", reason);
+  const onConfirmDeny = () => submit("deny", "once", reason);
 
   // 外层定位（absolute + max-width 容器）由 PendingInterruptDock 统一负责，
   // 这里只输出纯卡片，方便和 QuestionCard 共享同一 dock 外壳。
@@ -346,7 +370,7 @@ export function ApprovalBar({
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={onApprove}
+                  onClick={onApproveOnce}
                   className={cn(
                     "inline-flex h-8 items-center gap-1.5 rounded-lg bg-ink px-4 text-sm font-medium text-paper",
                     "shadow-[0_1px_2px_rgba(20,30,50,0.12)] transition-opacity hover:opacity-90",
@@ -354,8 +378,24 @@ export function ApprovalBar({
                   )}
                 >
                   <CheckIcon />
-                  允许
+                  允许一次
                 </button>
+                {rememberable && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={onApproveSession}
+                    title="仅记住当前文件、命令或服务，不会放行整个目录"
+                    className={cn(
+                      "inline-flex h-8 items-center gap-1.5 rounded-lg bg-ink px-4 text-sm font-medium text-paper",
+                      "shadow-[0_1px_2px_rgba(20,30,50,0.12)] transition-opacity hover:opacity-90",
+                      busy && "pointer-events-none opacity-50",
+                    )}
+                  >
+                    <CheckIcon />
+                    本会话允许
+                  </button>
+                )}
               </div>
             </>
           ) : (

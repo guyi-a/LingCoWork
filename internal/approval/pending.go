@@ -227,6 +227,17 @@ func (s *PendingStore) Has(convID, interruptID string) bool {
 	return false
 }
 
+func (s *PendingStore) Get(convID, interruptID string) (PendingItem, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.items[convID] {
+		if item != nil && item.InterruptID == interruptID && !item.resolved {
+			return *item, true
+		}
+	}
+	return PendingItem{}, false
+}
+
 // List returns a snapshot of pending approvals for a conversation in arrival
 // order. The returned items are copies so callers cannot mutate store state.
 func (s *PendingStore) List(convID string) []PendingItem {

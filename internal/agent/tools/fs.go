@@ -186,6 +186,53 @@ func newListFilesTool(d *fsDeps) (tool.BaseTool, error) {
 
 // --- read_file ---
 
+// observedState returns a cheap fingerprint of a file's identity for
+// optimistic-concurrency checks. The model reads a file, receives this value,
+// and passes it back on write/edit so the tool can reject an edit based on a
+// stale view (another agent/process changed the file in between). size +
+// mtimeNs is the same stat-cache heuristic git uses; it needs no content read
+// and changes whenever the file is rewritten (LingCoWork's own writes and
+// os.Rename both bump mtime). Returns "" when the file does not exist.
+func observedState(path string) string {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", st.Size(), st.ModTime().UnixNano())
+}
+
+// verifyObservedState rejects a write/edit based on a stale read. When the
+// model passes no observed_state it is a no-op (create-new or deliberate
+// overwrite). When it passes a version, the file must still be at that
+// version — otherwise the operation is a conflict the model must resolve by
+// re-reading. `op` is "write" or "patch", used only in the error text.
+func verifyObservedState(abs, displayPath, op, observed string) error {
+	if observed == "" {
+		return nil
+	}
+	cur := observedState(abs)
+	if cur == "" {
+		return fmt.Errorf(
+			"%s conflict: %q no longer exists (it existed when you read it); re-read_file%s",
+			op, displayPath, conflictRecreateHint(op),
+		)
+	}
+	if cur != observed {
+		return fmt.Errorf(
+			"%s conflict: %q changed since you read it (size/mtime differ), so it may contain edits you have not seen; call read_file to get the latest observed_state and re-apply",
+			op, displayPath,
+		)
+	}
+	return nil
+}
+
+func conflictRecreateHint(op string) string {
+	if op == "write" {
+		return ", or omit observed_state to create it fresh"
+	}
+	return ""
+}
+
 type ReadFileInput struct {
 	Path   string `json:"path" jsonschema:"description=File path to read. Either an absolute local path (any location on the user's machine) or relative to the current workspace root."`
 	Offset int64  `json:"offset" jsonschema:"description=Byte offset to start reading from. Default 0 (start of file). Use next_offset from a previous truncated call to continue reading."`
@@ -201,6 +248,10 @@ type ReadFileOutput struct {
 	EOF        bool   `json:"eof"`                 // true if this read reached end of file
 	Truncated  bool   `json:"truncated,omitempty"` // legacy alias: content ends before EOF because limit was hit
 	SizeBytes  int64  `json:"size_bytes"`
+	// ObservedState is a size+mtime fingerprint of the file at read time. Echo
+	// it back on write_file / apply_patch so the tool can reject an edit based
+	// on a stale read (conflict guard).
+	ObservedState string `json:"observed_state,omitempty"`
 }
 
 func newReadFileTool(d *fsDeps) (tool.BaseTool, error) {
@@ -281,20 +332,21 @@ func newReadFileTool(d *fsDeps) (tool.BaseTool, error) {
 		next := in.Offset + int64(n)
 		eof := next >= size
 		return &ReadFileOutput{
-			Path:       abs,
-			Content:    string(buf[:n]),
-			Offset:     in.Offset,
-			BytesRead:  n,
-			NextOffset: next,
-			EOF:        eof,
-			Truncated:  !eof,
-			SizeBytes:  size,
+			Path:          abs,
+			Content:       string(buf[:n]),
+			Offset:        in.Offset,
+			BytesRead:     n,
+			NextOffset:    next,
+			EOF:           eof,
+			Truncated:     !eof,
+			SizeBytes:     size,
+			ObservedState: fmt.Sprintf("%d:%d", size, st.ModTime().UnixNano()),
 		}, nil
 	}
 	return utils.InferTool(
 		"read_file",
 		fmt.Sprintf(
-			"Read a UTF-8 text slice from a file. Accepts an absolute local path (anywhere on the user's machine) or a workspace-relative path. Reads at most %d KiB per call — for larger files, pass offset (bytes) to continue where the previous call ended (use next_offset). Set limit to cap this call's read size. Rejects binary files (only on offset=0). Returns { content, offset, bytes_read, next_offset, eof, size_bytes }.",
+			"Read a UTF-8 text slice from a file. Accepts an absolute local path (anywhere on the user's machine) or a workspace-relative path. Reads at most %d KiB per call — for larger files, pass offset (bytes) to continue where the previous call ended (use next_offset). Set limit to cap this call's read size. Rejects binary files (only on offset=0). Returns { content, offset, bytes_read, next_offset, eof, size_bytes, observed_state }. Echo observed_state back on write_file / apply_patch to guard against editing a stale version of the file.",
 			maxReadBytes/1024,
 		),
 		fn,
@@ -414,6 +466,12 @@ func isKnownText(kind string) bool {
 type WriteFileInput struct {
 	Path    string `json:"path" jsonschema:"description=File path to write. Relative to workspace root. Parent directories are created automatically."`
 	Content string `json:"content" jsonschema:"description=File content. UTF-8 text. The whole file is overwritten."`
+	// ObservedState is the observed_state read_file returned for this file.
+	// When present, the tool verifies the file is still at that version before
+	// overwriting, so an edit based on a stale read is rejected instead of
+	// clobbering changes you did not see. Leave empty to create a new file or
+	// to deliberately overwrite without a guard.
+	ObservedState string `json:"observed_state,omitempty" jsonschema:"description=Echo the observed_state you got from read_file for this file\\, so the write is rejected if the file changed since you read it."`
 }
 
 type WriteFileOutput struct {
@@ -440,6 +498,9 @@ func newWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 		if abs == strings.TrimSuffix(ws, string(filepath.Separator)) {
 			return nil, fmt.Errorf("refusing to write to the workspace root")
 		}
+		if err := verifyObservedState(abs, in.Path, "write", in.ObservedState); err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return nil, fmt.Errorf("mkdir parent: %w", err)
 		}
@@ -450,7 +511,7 @@ func newWriteFileTool(d *fsDeps) (tool.BaseTool, error) {
 	}
 	return utils.InferTool(
 		"write_file",
-		"Create or fully overwrite a UTF-8 text file inside the workspace. Missing parent directories are created. Prefer apply_patch for partial changes; use this only when creating a new file or rewriting the whole content. **Size cap: 64 KiB per call** — files above this must be written via write_file_chunked in small chunks (each append ≤ 32 KiB, recommended ≤ 15 KiB to stay well below upstream streaming limits).",
+		"Create or fully overwrite a UTF-8 text file inside the workspace. Missing parent directories are created. Prefer apply_patch for partial changes; use this only when creating a new file or rewriting the whole content. **Size cap: 64 KiB per call** — files above this must be written via write_file_chunked in small chunks (each append ≤ 32 KiB, recommended ≤ 15 KiB to stay well below upstream streaming limits). If you previously read_file this path, pass its observed_state so the write is rejected when the file changed since you read it.",
 		fn,
 	)
 }

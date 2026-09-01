@@ -49,9 +49,9 @@ func TestApprovalMatrix(t *testing.T) {
 		name string
 		srv  ServerConfig
 		ann  mcpgo.ToolAnnotation
-		// needsApproval is what the default and auto modes consult.
+		// needsApproval is the conservative manual-mode baseline.
 		needsApproval bool
-		// mustAsk holds in every mode, full_access included.
+		// mustAsk holds in every mode, auto included.
 		mustAsk bool
 	}{
 		{
@@ -66,9 +66,10 @@ func TestApprovalMatrix(t *testing.T) {
 			needsApproval: true,
 		},
 		{
-			name: "read-only claim from a trusted server passes",
-			srv:  ServerConfig{Name: "s", URL: "u", TrustAnnotations: true},
-			ann:  mcpgo.ToolAnnotation{ReadOnlyHint: boolp(true)},
+			name:          "manual still reviews a trusted read-only server",
+			srv:           ServerConfig{Name: "s", URL: "u", TrustAnnotations: true},
+			ann:           mcpgo.ToolAnnotation{ReadOnlyHint: boolp(true)},
+			needsApproval: true,
 		},
 		{
 			name:          "destructive claim is believed even from a trusted server",
@@ -97,6 +98,7 @@ func TestApprovalMatrix(t *testing.T) {
 			ann: mcpgo.ToolAnnotation{
 				ReadOnlyHint: boolp(true), OpenWorldHint: boolp(true),
 			},
+			needsApproval: true,
 		},
 	}
 

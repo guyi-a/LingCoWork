@@ -23,6 +23,7 @@ type Service struct {
 	messages *repository.MessageRepo
 	convs    *repository.ConversationRepo
 	projects *repository.ProjectRepo
+	changes  *repository.WorkspaceChangeRepo
 }
 
 func NewService(
@@ -30,8 +31,13 @@ func NewService(
 	messages *repository.MessageRepo,
 	convs *repository.ConversationRepo,
 	projects *repository.ProjectRepo,
+	changes ...*repository.WorkspaceChangeRepo,
 ) *Service {
-	return &Service{runs: runs, messages: messages, convs: convs, projects: projects}
+	s := &Service{runs: runs, messages: messages, convs: convs, projects: projects}
+	if len(changes) > 0 {
+		s.changes = changes[0]
+	}
+	return s
 }
 
 type commandArgs struct {
@@ -40,15 +46,16 @@ type commandArgs struct {
 }
 
 type commandResult struct {
-	ExitCode        int      `json:"exit_code"`
-	DurationMs      int64    `json:"duration_ms"`
-	Stdout          string   `json:"stdout"`
-	Stderr          string   `json:"stderr"`
-	StdoutTruncated bool     `json:"stdout_truncated,omitempty"`
-	StderrTruncated bool     `json:"stderr_truncated,omitempty"`
-	TimedOut        bool     `json:"timed_out,omitempty"`
-	Cwd             string   `json:"cwd"`
-	Validation      *Summary `json:"validation,omitempty"`
+	ExitCode         int      `json:"exit_code"`
+	DurationMs       int64    `json:"duration_ms"`
+	Stdout           string   `json:"stdout"`
+	Stderr           string   `json:"stderr"`
+	StdoutTruncated  bool     `json:"stdout_truncated,omitempty"`
+	StderrTruncated  bool     `json:"stderr_truncated,omitempty"`
+	TimedOut         bool     `json:"timed_out,omitempty"`
+	Cwd              string   `json:"cwd"`
+	Validation       *Summary `json:"validation,omitempty"`
+	ValidationDigest *Digest  `json:"validation_digest,omitempty"`
 }
 
 type Run struct {
@@ -111,6 +118,8 @@ func (s *Service) Enrich(
 		result.Stdout, result.Stderr, result.ExitCode,
 	)
 	result.Validation = &summary
+	digest := NewDigest(args.Command, result.Cwd, summary)
+	result.ValidationDigest = &digest
 	enriched, err := json.Marshal(result)
 	if err != nil {
 		return resultJSON

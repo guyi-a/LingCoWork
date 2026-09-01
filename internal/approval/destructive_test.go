@@ -2,13 +2,13 @@ package approval
 
 import "testing"
 
-// The destructive wall is the one rule that holds even in full_access, so
+// The destructive wall is the one rule that holds even in auto, so
 // every case here is a claim about what the user can never do by accident.
 
 func TestIsDestructiveShellWrappers(t *testing.T) {
 	// Wrappers park a harmless token in argv[0] and carry the real command
 	// in the arguments. Before unwrapping, every one of these ran unprompted
-	// in full_access.
+	// in auto.
 	cases := []string{
 		`ls | xargs rm -rf`,
 		`xargs -I{} rm -rf {}`,
@@ -91,7 +91,7 @@ func TestIsDestructiveNestingDepth(t *testing.T) {
 
 func TestIsDestructiveRmGranularity(t *testing.T) {
 	// Plain removes stay out of the wall on purpose: they still hit normal
-	// approval, but full_access shouldn't prompt for every deleted file.
+	// approval, but auto shouldn't prompt for every deleted file.
 	tests := []struct {
 		cmd  string
 		want bool

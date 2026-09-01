@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyContextPatchMultipleHunks(t *testing.T) {
@@ -236,5 +237,129 @@ func TestApplyPatchFileRejectsBinaryAndSymlinkEscape(t *testing.T) {
 	}
 	if string(got) != "old\n" {
 		t.Fatalf("outside file changed: %q", got)
+	}
+}
+
+func TestApplyContextPatchFuzzyWhitespaceTolerance(t *testing.T) {
+	// The removed line carries trailing whitespace in the file, which breaks an
+	// exact match; the hunk's distinctive `func add` context line anchors the
+	// fuzzy fallback so the edit still lands in the right block.
+	source := []byte("package demo\n\nfunc add(a, b int) int {\n\treturn a - b   \n}\n\nfunc sub(a, b int) int {\n\treturn a - b\n}\n")
+	hunks, err := parseContextPatch("@@\n func add(a, b int) int {\n-\treturn a - b\n+\treturn a + b\n }")
+	if err != nil {
+		t.Fatalf("parseContextPatch: %v", err)
+	}
+	got, applied, err := applyContextPatch(context.Background(), source, hunks)
+	if err != nil {
+		t.Fatalf("applyContextPatch fuzzy: %v", err)
+	}
+	want := "package demo\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n\nfunc sub(a, b int) int {\n\treturn a - b\n}\n"
+	if string(got) != want {
+		t.Fatalf("patched content:\n%s\nwant:\n%s", got, want)
+	}
+	if len(applied) != 1 || !applied[0].fuzzy {
+		t.Fatalf("applied=%#v, want exactly one hunk marked fuzzy", applied)
+	}
+}
+
+func TestApplyContextPatchFuzzyRejectsAmbiguous(t *testing.T) {
+	// Two equally-plausible trailing-whitespace windows leave no unambiguous
+	// anchor, so the fuzzy fallback must reject rather than guess.
+	source := []byte("a \nb\na \nb\n")
+	hunks, err := parseContextPatch("@@\n a\n-b\n+c")
+	if err != nil {
+		t.Fatalf("parseContextPatch: %v", err)
+	}
+	_, _, err = applyContextPatch(context.Background(), source, hunks)
+	if err == nil || !strings.Contains(err.Error(), "context was not found") {
+		t.Fatalf("error = %v, want not-found after ambiguous fuzzy", err)
+	}
+}
+
+func TestObservedStateMatchesAndConflicts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reading yields a state; writing it back matches (no-op) / no conflict.
+	state := observedState(path)
+	if state == "" {
+		t.Fatal("observedState returned empty for an existing file")
+	}
+	if err := verifyObservedState(path, "a.go", "write", ""); err != nil {
+		t.Fatalf("empty observed_state should be a no-op, got %v", err)
+	}
+	if err := verifyObservedState(path, "a.go", "write", state); err != nil {
+		t.Fatalf("matching observed_state should pass, got %v", err)
+	}
+
+	// Changing the file makes the old state a conflict.
+	time.Sleep(10 * time.Millisecond) // ensure mtime moves
+	if err := os.WriteFile(path, []byte("package a\n\nfunc A() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := verifyObservedState(path, "a.go", "patch", state)
+	if err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("stale observed_state should conflict, got %v", err)
+	}
+
+	// A deleted file is a conflict for an observed write, and empty for a fresh one.
+	gone := filepath.Join(dir, "gone.go")
+	if err := os.WriteFile(gone, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gState := observedState(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyObservedState(gone, "gone.go", "write", gState); err == nil {
+		t.Fatal("observed write to a deleted file should conflict")
+	}
+	if err := verifyObservedState(gone, "gone.go", "write", ""); err != nil {
+		t.Fatalf("observed_state empty to a deleted file should pass, got %v", err)
+	}
+}
+
+func TestApplyPatchRejectsStaleObservedState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+
+	if err := os.WriteFile(path, []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := observedState(path)
+	time.Sleep(10 * time.Millisecond) // ensure mtime moves
+	if err := os.WriteFile(path, []byte("package a\n\nfunc A() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hunks, err := parseContextPatch("@@\n-func A() {}\n+func A() int { return 1 }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The file changed since the model read it → the whole patch is a conflict,
+	// detected before any context matching.
+	in := &ApplyPatchInput{Path: "a.go", Patch: "@@\n-func A() {}\n+func A() int { return 1 }", ObservedState: state}
+	if _, err := applyPatchFile(context.Background(), dir, in, hunks); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("stale observed_state should conflict, got %v", err)
+	}
+
+	// Restore content the hunk matches; a fresh observed_state lets it apply.
+	if err := os.WriteFile(path, []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fresh := observedState(path)
+	in2 := &ApplyPatchInput{Path: "a.go", Patch: in.Patch, ObservedState: fresh}
+	if _, err := applyPatchFile(context.Background(), dir, in2, hunks); err != nil {
+		t.Fatalf("fresh observed_state should pass, got %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package a\n\nfunc A() int { return 1 }\n" {
+		t.Fatalf("patched content = %q", got)
 	}
 }

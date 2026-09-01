@@ -107,9 +107,18 @@ export function Home() {
             <PromptInput
               streaming={false}
               blocked={!project || workspacePending}
+              context={
+                project
+                  ? {
+                      conversationId: draftId,
+                      projectId: project.id,
+                      workspace: project.workspace,
+                    }
+                  : undefined
+              }
               placeholder={
                 project
-                  ? "描述你想在这个工作区完成的任务"
+                  ? "描述任务 · 输入 @ 添加工作区上下文"
                   : "请先选择工作区"
               }
               blockedHint="请先选择工作区"

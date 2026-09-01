@@ -15,22 +15,9 @@ import (
 	"github.com/guyi-a/Interview-Agent/internal/stream"
 )
 
-// Middleware wraps tool calls with the approval decision chain. Order is:
-//
-//  1. derive the effect. An unregistered tool or a failing deriver yields
-//     KindUnknown.
-//  2. MustAsk (irreversible, or an effect we couldn't derive) → ALWAYS
-//     prompt, even in full_access.
-//  3. full_access → skip approval (placed after step 2 so an elevated mode
-//     can't green-light data loss or an unrecognised call).
-//  4. policy says no approval needed → run normally.
-//  5. resume: apply the user's decision (allow → next; deny → denial JSON).
-//  6. auto mode:
-//     a. IsSafeAuto (fast path rules)   → next
-//     b. Classifier (LLM) says allow    → next
-//     ↳ anything else falls through.
-//  7. Otherwise (default mode, or auto that fell through): tool.Interrupt
-//     to pause for the human.
+// Middleware wraps tool calls with the deterministic three-mode approval
+// policy. Effects are re-derived on resume and bound to the decision digest,
+// so an approved target cannot change between review and execution.
 //
 // Every agent in the process shares one Middleware value. Building a second
 // one per sub-agent would work, but the supervisor and its sub-agents would
@@ -46,19 +33,21 @@ import (
 //	    approvalMW,
 //	    toolerr.Middleware(),
 //	}
-func Middleware(store *ModeStore, classifier *Classifier, registry *effect.Registry) compose.ToolMiddleware {
+func Middleware(store *ModeStore, memory *Memory, registry *effect.Registry) compose.ToolMiddleware {
 	interrupt := func(ctx context.Context, input *compose.ToolInput, e effect.Effect) error {
+		_, rememberable := Fingerprint(e, input.Arguments)
 		return tool.Interrupt(ctx, &stream.ApprovalInfo{
-			Tool:       input.Name,
-			Args:       input.Arguments,
-			CallID:     input.CallID,
-			EffectJSON: e.JSON(),
+			Tool:         input.Name,
+			Args:         input.Arguments,
+			CallID:       input.CallID,
+			EffectJSON:   e.JSON(),
+			Rememberable: rememberable,
 		})
 	}
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
-				decision := evaluate(ctx, store, classifier, registry, input.Name, input.Arguments)
+				decision := evaluate(ctx, store, memory, registry, input.Name, input.Arguments)
 				switch decision.kind {
 				case decisionPass:
 					return next(ctx, input)
@@ -71,7 +60,7 @@ func Middleware(store *ModeStore, classifier *Classifier, registry *effect.Regis
 		},
 		Streamable: func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
-				decision := evaluate(ctx, store, classifier, registry, input.Name, input.Arguments)
+				decision := evaluate(ctx, store, memory, registry, input.Name, input.Arguments)
 				switch decision.kind {
 				case decisionPass:
 					return next(ctx, input)
@@ -107,64 +96,55 @@ type decision struct {
 func evaluate(
 	ctx context.Context,
 	store *ModeStore,
-	classifier *Classifier,
+	memory *Memory,
 	registry *effect.Registry,
 	toolName, argsJSON string,
 ) decision {
 	e := registry.Derive(ctx, toolName, argsJSON)
 
-	// (1) Cases no mode may skip: irreversible, or underivable.
-	if must, why := MustAsk(e); must {
-		if resumed, dec, ok := resumeDecision(ctx); resumed {
-			if ok && !dec.Approved {
-				return decision{kind: decisionDeny, reason: dec.Reason, effect: e}
-			}
-			return decision{kind: decisionPass, effect: e}
+	// A resume decision is authoritative only for the exact effect the user
+	// reviewed. Missing payloads fail closed instead of implicitly approving
+	// sibling interrupts.
+	if resumed, dec, ok := resumeDecision(ctx); resumed {
+		if !ok {
+			return decision{kind: decisionInterrupt, effect: e}
 		}
+		if !dec.Approved {
+			return decision{kind: decisionDeny, reason: dec.Reason, effect: e}
+		}
+		if dec.EffectDigest != "" && dec.EffectDigest != EffectDigest(e) {
+			log.Printf("approval: target changed before execution for %s", toolName)
+			return decision{kind: decisionInterrupt, effect: e}
+		}
+		return decision{kind: decisionPass, effect: e}
+	}
+
+	// The safety wall is shared by every mode.
+	if must, why := MustAsk(e); must {
 		log.Printf("approval: wall held %s (%s / %s)", toolName, e.Kind, why)
+		return decision{kind: decisionInterrupt, effect: e}
+	}
+	if sensitive, why := IsSensitiveCall(e, argsJSON); sensitive {
+		log.Printf("approval: sensitive call held %s (%s)", toolName, why)
 		return decision{kind: decisionInterrupt, effect: e}
 	}
 
 	mode := store.Get(contextkey.ConversationID(ctx))
-
-	// (2) full_access — after the wall, so elevation can't step over it.
-	if mode == ModeFullAccess {
+	if !ShouldAsk(mode, e) {
 		return decision{kind: decisionPass, effect: e}
 	}
 
-	// (3) Policy says no approval needed.
-	if !NeedsApproval(e) {
-		return decision{kind: decisionPass, effect: e}
-	}
-
-	// (4) Already resumed with a decision.
-	if resumed, dec, ok := resumeDecision(ctx); resumed {
-		if !ok || dec.Approved {
-			// No decision attached: treat as approved so implicit-resume-all
-			// flows (Runner.Resume without params) don't deadlock.
+	if fingerprint, ok := Fingerprint(e, argsJSON); ok {
+		if rememberedInSnapshot(ctx, fingerprint) {
+			log.Printf("approval: remembered grant allowed %s", toolName)
 			return decision{kind: decisionPass, effect: e}
 		}
-		return decision{kind: decisionDeny, reason: dec.Reason, effect: e}
-	}
-
-	// (5) auto mode: fast path → classifier → fall through.
-	if mode == ModeAuto {
-		if ok, why := IsSafeAuto(e, argsJSON); ok {
-			log.Printf("approval: auto fastpath allowed %s (%s)", toolName, why)
-			return decision{kind: decisionPass, effect: e}
-		}
-		if classifier.IsAvailable() {
-			verdict, err := classifier.Classify(ctx, toolName, e, argsJSON)
-			if err != nil {
-				log.Printf("approval: classifier failed for %s: %v (reason=%s)", toolName, err, verdict.Reason)
-			}
-			if verdict.Approved {
-				log.Printf("approval: auto classifier allowed %s (%s)", toolName, verdict.Reason)
+		// Test and direct middleware callers may not install a run snapshot.
+		if _, hasSnapshot := ctx.Value(memorySnapshotKey{}).(map[string]struct{}); !hasSnapshot {
+			if _, live := memory.Allowed(contextkey.ConversationID(ctx))[fingerprint]; live {
 				return decision{kind: decisionPass, effect: e}
 			}
-			log.Printf("approval: auto classifier deferred %s (%s)", toolName, verdict.Reason)
 		}
-		// Fall through to interrupt.
 	}
 
 	return decision{kind: decisionInterrupt, effect: e}

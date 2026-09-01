@@ -3,8 +3,8 @@ package stream
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -13,6 +13,7 @@ type recordingJournal struct {
 	assistants []AssistantTurnRecord
 	tools      []ToolResultRecord
 	fail       error
+	seq        int
 }
 
 func TestAssistantPersistenceFailureStopsBeforeToolPublication(t *testing.T) {
@@ -47,20 +48,22 @@ func TestAssistantPersistenceFailureStopsBeforeToolPublication(t *testing.T) {
 	}
 }
 
-func (j *recordingJournal) AppendAssistant(_ context.Context, record AssistantTurnRecord) error {
+func (j *recordingJournal) AppendAssistant(_ context.Context, record AssistantTurnRecord) (int, bool, error) {
 	if j.fail != nil {
-		return j.fail
+		return 0, false, j.fail
 	}
 	j.assistants = append(j.assistants, record)
-	return nil
+	j.seq++
+	return j.seq, true, nil
 }
 
-func (j *recordingJournal) AppendToolResult(_ context.Context, record ToolResultRecord) error {
+func (j *recordingJournal) AppendToolResult(_ context.Context, record ToolResultRecord) (int, bool, error) {
 	if j.fail != nil {
-		return j.fail
+		return 0, false, j.fail
 	}
 	j.tools = append(j.tools, record)
-	return nil
+	j.seq++
+	return j.seq, true, nil
 }
 
 func (*recordingJournal) AppendPartialAssistant(context.Context, string, string) error {
@@ -77,13 +80,32 @@ type countingJournal struct {
 	lastAssistantCalls int
 }
 
-func (*countingJournal) AppendAssistant(context.Context, AssistantTurnRecord) error { return nil }
-func (*countingJournal) AppendToolResult(context.Context, ToolResultRecord) error   { return nil }
+func (*countingJournal) AppendAssistant(context.Context, AssistantTurnRecord) (int, bool, error) {
+	return 1, true, nil
+}
+func (*countingJournal) AppendToolResult(context.Context, ToolResultRecord) (int, bool, error) {
+	return 2, true, nil
+}
 func (*countingJournal) AppendPartialAssistant(context.Context, string, string) error {
 	return nil
 }
 func (j *countingJournal) UpdateLastAssistant(context.Context, int, string) error {
 	j.lastAssistantCalls++
+	return nil
+}
+
+type rearmingJournal struct {
+	countingJournal
+	collector *RunCollector
+}
+
+func (j *rearmingJournal) UpdateLastAssistant(ctx context.Context, tokens int, extra string) error {
+	j.lastAssistantCalls++
+	if j.lastAssistantCalls == 1 {
+		j.collector.AppendSubEvent(SubAgentEvent{
+			Agent: "deep_research", Type: "text", Content: "arrived during flush",
+		})
+	}
 	return nil
 }
 
@@ -125,6 +147,23 @@ func TestFlushSubEventsWritesOnlyWhenDirty(t *testing.T) {
 	}
 }
 
+func TestFlushSubEventsDoesNotLoseConcurrentUpdate(t *testing.T) {
+	collector := NewRunCollector()
+	collector.AppendSubEvent(SubAgentEvent{
+		Agent: "deep_research", Type: "text", Content: "first",
+	})
+	journal := &rearmingJournal{collector: collector}
+	if err := flushSubEvents(t.Context(), collector, journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := flushSubEvents(t.Context(), collector, journal); err != nil {
+		t.Fatal(err)
+	}
+	if journal.lastAssistantCalls != 2 {
+		t.Fatalf("writes=%d, concurrent event was marked clean", journal.lastAssistantCalls)
+	}
+}
+
 func TestDrainAssistantPersistsBoundaryAndClearsReplay(t *testing.T) {
 	buf := NewBuffer()
 	collector := NewRunCollector()
@@ -153,11 +192,14 @@ func TestDrainAssistantPersistsBoundaryAndClearsReplay(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	replay := buf.StreamAll(ctx)
-	frame := string(receive(t, replay))
-	if !strings.Contains(frame, `"type":"tool_call"`) ||
-		strings.Contains(frame, `"type":"text"`) {
-		t.Fatalf("unexpected replay after assistant boundary: %s", frame)
+	replay, status, durable := buf.StreamFrom(ctx, 1)
+	if status != CursorEqual || durable != 1 {
+		t.Fatalf("status=%s durable=%d", status, durable)
+	}
+	select {
+	case frame := <-replay:
+		t.Fatalf("durable assistant frame remained replayable: %s", frame)
+	case <-time.After(20 * time.Millisecond):
 	}
 }
 
@@ -181,5 +223,14 @@ func TestEmitToolResultPersistsBeforePublishing(t *testing.T) {
 	}
 	if frame := receive(t, sub); len(frame) == 0 {
 		t.Fatal("connected subscriber did not receive tool result")
+	}
+	replay, status, _ := buf.StreamFrom(ctx, 1)
+	if status != CursorEqual {
+		t.Fatalf("replay status=%s", status)
+	}
+	select {
+	case frame := <-replay:
+		t.Fatalf("durable tool result remained replayable: %s", frame)
+	case <-time.After(20 * time.Millisecond):
 	}
 }

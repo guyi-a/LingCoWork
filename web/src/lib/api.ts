@@ -368,6 +368,7 @@ export async function openProjectInFinder(id: string): Promise<void> {
 
 export type MessageHistory = {
   messages: PersistedMessage[];
+  lastSeq: number;
   // Token count at which history gets folded into a summary. 0 when
   // compaction is disabled — no threshold to show progress against.
   contextLimit: number;
@@ -381,10 +382,12 @@ export async function listMessages(id: string): Promise<MessageHistory> {
   const data = (await res.json()) as {
     messages: PersistedMessage[];
     context_limit?: number;
+    last_seq?: number;
   };
   return {
     messages: data.messages ?? [],
     contextLimit: data.context_limit ?? 0,
+    lastSeq: data.last_seq ?? 0,
   };
 }
 
@@ -572,14 +575,35 @@ export async function cancelPlan(
 export async function resumeChat(
   id: string,
   signal: AbortSignal,
-): Promise<Response | null> {
-  const res = await fetch(`${API_BASE}/chat/${encodeURIComponent(id)}`, {
+  afterSeq: number,
+): Promise<
+  | { kind: "stream"; response: Response }
+  | { kind: "idle" }
+  | {
+      kind: "retry";
+      cursorStatus?: "client_stale" | "buffer_behind";
+      durableSeq?: number;
+    }
+> {
+  const params = new URLSearchParams({ after_seq: String(afterSeq) });
+  const res = await fetch(`${API_BASE}/chat/${encodeURIComponent(id)}?${params}`, {
     method: "GET",
     signal,
   });
-  if (res.status === 204) return null;
+  if (res.status === 204) return { kind: "idle" };
+  if (res.status === 409) {
+    const data = (await res.json().catch(() => null)) as {
+      cursor_status?: "client_stale" | "buffer_behind";
+      durable_seq?: number;
+    } | null;
+    return {
+      kind: "retry",
+      cursorStatus: data?.cursor_status,
+      durableSeq: data?.durable_seq,
+    };
+  }
   if (!res.ok) throw new Error(`resumeChat: ${res.status}`);
-  return res;
+  return { kind: "stream", response: res };
 }
 
 export async function cancelChat(id: string): Promise<void> {
@@ -595,6 +619,8 @@ export type InterruptDecisionResult = {
   resumed: boolean;
 };
 
+export type ApprovalScope = "once" | "session";
+
 // postApproval sends one answer from a possibly parallel interrupt batch.
 // 404 is treated as already handled; a successful response says whether this
 // answer completed the batch and actually resumed the checkpoint.
@@ -602,6 +628,7 @@ export async function postApproval(
   conversationID: string,
   interruptID: string,
   decision: "approve" | "deny",
+  scope: ApprovalScope,
   reason?: string,
 ): Promise<InterruptDecisionResult> {
   const res = await fetch(
@@ -609,7 +636,7 @@ export async function postApproval(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, reason }),
+      body: JSON.stringify({ decision, scope, reason }),
     },
   );
   if (res.status === 404) return { handled: false, resumed: false };
@@ -630,6 +657,8 @@ export type PendingInterruptItem = {
   // 审批依据的 effect（后端 internal/effect 的序列化结果）。可能缺失：
   // 这个字段上线前落盘的 pending 行没有它，卡片回退到按 args_json 渲染。
   effect_json?: string;
+  // 后端明确判定该审批能否在会话内记忆。旧响应可能缺失。
+  rememberable?: boolean;
   questions_json?: string;
   plan_json?: string;
 };
@@ -679,7 +708,7 @@ export async function postQuestionAnswer(
 
 // The set of per-conversation approval modes. Kept in sync with backend
 // approval.Mode — extending here without extending backend will 400 on POST.
-export type ApprovalMode = "default" | "auto" | "full_access";
+export type ApprovalMode = "manual" | "accept-write" | "auto";
 
 export async function getApprovalMode(
   conversationID: string,
@@ -689,7 +718,14 @@ export async function getApprovalMode(
   );
   if (!res.ok) throw new Error(`getApprovalMode: ${res.status}`);
   const data = (await res.json()) as { mode?: string };
-  return (data.mode as ApprovalMode) ?? "default";
+  if (
+    data.mode === "manual" ||
+    data.mode === "accept-write" ||
+    data.mode === "auto"
+  ) {
+    return data.mode;
+  }
+  return "manual";
 }
 
 export async function setApprovalMode(

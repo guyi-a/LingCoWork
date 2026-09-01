@@ -16,6 +16,13 @@ import {
   InstructionIcon,
   InstructionPicker,
 } from "./InstructionPicker";
+import { ContextPicker } from "./ContextPicker";
+import {
+  findContextMention,
+  replaceContextMention,
+  workspaceEntryToAttachment,
+} from "./context-mention";
+import { useAttachmentsStore } from "./attachments-store";
 
 const PICKER_NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "Enter"]);
 
@@ -42,6 +49,7 @@ export function PromptInput({
   topSlot,
   hasAttachments = false,
   onImageFiles,
+  context,
   placeholder,
   blockedHint,
 }: {
@@ -73,6 +81,11 @@ export function PromptInput({
   // clipboard/drop content (plain text, non-image files) is left alone so
   // native paste/drop behaviour still works.
   onImageFiles?: (files: File[]) => void;
+  context?: {
+    conversationId: string;
+    projectId: string;
+    workspace: string;
+  };
   // Lets non-HITL callers explain why submission is blocked without reusing
   // the approval-specific copy.
   placeholder?: string;
@@ -83,13 +96,20 @@ export function PromptInput({
   const [instructionsLoading, setInstructionsLoading] = useState(false);
   const [selectedInstruction, setSelectedInstruction] = useState<Instruction>();
   const [manualPickerOpen, setManualPickerOpen] = useState(false);
+  const [caret, setCaret] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const addAttachments = useAttachmentsStore((state) => state.add);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const pickerCommandRef = useRef<HTMLDivElement>(null);
 
-  const slashQuery = /^\/(\S*)$/.exec(text)?.[1];
+  const contextMention =
+    context && !composing ? findContextMention(text, caret) : null;
+  const contextPickerOpen = contextMention !== null;
+  const slashQuery = contextPickerOpen ? undefined : /^\/(\S*)$/.exec(text)?.[1];
   const slashPickerOpen = slashQuery !== undefined;
-  const pickerOpen = slashPickerOpen || manualPickerOpen;
+  const instructionPickerOpen =
+    !contextPickerOpen && (slashPickerOpen || manualPickerOpen);
   const filteredInstructions = slashPickerOpen
     ? instructions.filter((instruction) => {
         const query = slashQuery.toLowerCase();
@@ -149,6 +169,7 @@ export function PromptInput({
     if (blocked) return;
     onSend(t, selectedInstruction);
     setText("");
+    setCaret(0);
     setSelectedInstruction(undefined);
     setManualPickerOpen(false);
     // Reset height explicitly — the effect will re-run on next render but
@@ -170,15 +191,25 @@ export function PromptInput({
       setSelectedInstruction(undefined);
       return;
     }
-    if (pickerOpen && e.key === "Escape") {
+    if (contextMention && e.key === "Escape") {
+      e.preventDefault();
+      const next = replaceContextMention(text, contextMention);
+      setText(next.text);
+      setCaret(next.caret);
+      requestAnimationFrame(() => {
+        textareaRef.current?.setSelectionRange(next.caret, next.caret);
+      });
+      return;
+    }
+    if (instructionPickerOpen && e.key === "Escape") {
       e.preventDefault();
       if (slashPickerOpen) setText("");
       setManualPickerOpen(false);
       return;
     }
     if (
-      slashPickerOpen &&
-      filteredInstructions.length > 0 &&
+      (contextPickerOpen ||
+        (slashPickerOpen && filteredInstructions.length > 0)) &&
       PICKER_NAVIGATION_KEYS.has(e.key)
     ) {
       e.preventDefault();
@@ -283,7 +314,27 @@ export function PromptInput({
             "focus-within:shadow-[0_0_0_3px_oklch(0.36_0.10_245/0.12)]",
           )}
         >
-          {pickerOpen && (
+          {contextMention && context && (
+            <ContextPicker
+              commandRef={pickerCommandRef}
+              conversationId={context.conversationId}
+              projectId={context.projectId}
+              query={contextMention.query}
+              onSelect={(entry) => {
+                addAttachments(context.conversationId, [
+                  workspaceEntryToAttachment(context.workspace, entry),
+                ]);
+                const next = replaceContextMention(text, contextMention);
+                setText(next.text);
+                setCaret(next.caret);
+                requestAnimationFrame(() => {
+                  textareaRef.current?.focus();
+                  textareaRef.current?.setSelectionRange(next.caret, next.caret);
+                });
+              }}
+            />
+          )}
+          {instructionPickerOpen && (
             <InstructionPicker
               commandRef={pickerCommandRef}
               instructions={filteredInstructions}
@@ -292,8 +343,11 @@ export function PromptInput({
               onSelect={(instruction) => {
                 setSelectedInstruction(instruction);
                 setManualPickerOpen(false);
-                if (slashPickerOpen) setText("");
-                textareaRef.current?.focus();
+                if (slashPickerOpen) {
+                  setText("");
+                  setCaret(0);
+                }
+                requestAnimationFrame(() => textareaRef.current?.focus());
               }}
               showSearchInput={!slashPickerOpen}
             />
@@ -320,21 +374,38 @@ export function PromptInput({
             ref={textareaRef}
             rows={1}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              setCaret(e.target.selectionStart);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+            onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={(e) => {
+              setComposing(false);
+              setCaret(e.currentTarget.selectionStart);
+            }}
             onFocus={() => {
               if (manualPickerOpen) setManualPickerOpen(false);
             }}
             onKeyDown={onKey}
             onPaste={onPaste}
-            aria-expanded={slashPickerOpen}
-            aria-controls={slashPickerOpen ? "instruction-picker" : undefined}
+            aria-expanded={contextPickerOpen || slashPickerOpen}
+            aria-controls={
+              contextPickerOpen
+                ? "context-picker"
+                : slashPickerOpen
+                  ? "instruction-picker"
+                  : undefined
+            }
             placeholder={
               placeholder ??
               (blocked
                 ? "先回答上面的问题"
                 : streaming
                   ? "响应中 · 继续输入会排队"
-                  : "写点什么")
+                  : "写点什么 · 输入 @ 添加上下文")
             }
             className={cn(
               "block w-full resize-none bg-transparent px-5 pt-4 pb-2",
@@ -358,7 +429,14 @@ export function PromptInput({
               )}
               <button
                 type="button"
-                onClick={() => setManualPickerOpen((open) => !open)}
+                onClick={() => {
+                  if (contextMention) {
+                    const next = replaceContextMention(text, contextMention);
+                    setText(next.text);
+                    setCaret(next.caret);
+                  }
+                  setManualPickerOpen((open) => !open);
+                }}
                 title="选择快捷指令"
                 aria-label="选择快捷指令"
                 aria-expanded={manualPickerOpen}
