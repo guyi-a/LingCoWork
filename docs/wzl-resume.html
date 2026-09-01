@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>王智林 · 简历</title>
+<style>
+@page {
+  size: A4;
+  margin: 1.4cm 1.5cm;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { margin: 0; padding: 0; }
+
+:root {
+  --ink: #000000;        /* 主色：纯黑（PDF 打印渲染偏灰，屏幕色板整体加深一档） */
+  --ink-2: #333d4d;      /* 次色：深 slate */
+  --muted: #4d5866;      /* 灰 */
+  --line: #e2e8f0;       /* 分隔线 */
+  --bg-soft: #f1f5f9;    /* 浅背景块 */
+
+  /* 唯一强调色：只用在结构件（分割线、栏目、方向条、圆点、序号），正文不上色 */
+  --accent: #1b4f8a;       /* 深蓝 */
+  --accent-deep: #143a5e;  /* 加深，用于标题文字 */
+  --accent-soft: #edf3f9;  /* 浅底 */
+  --accent-line: #c7dbed;  /* 细线 */
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.7;
+  color: var(--ink);
+  font-weight: 500;  /* PDF 打印渲染偏细，用 Medium 补回视觉浓度 */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* ============== HEADER ============== */
+.header {
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--accent);
+  margin-bottom: 16px;
+}
+.name {
+  font-size: 32pt;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: 8px;
+  line-height: 1.1;
+  margin-bottom: 10px;
+}
+.contact {
+  font-size: 10pt;
+  color: var(--ink-2);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.contact-item { display: inline-flex; align-items: center; }
+.contact-item .label {
+  font-size: 8pt;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-right: 5px;
+}
+.contact-item .value {
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.contact-sep {
+  color: var(--line);
+  font-weight: 400;
+}
+
+/* ============== SECTION ============== */
+h2.section {
+  font-size: 14pt;
+  color: var(--accent-deep);
+  margin: 18px 0 10px 0;
+  font-weight: 800;
+  letter-spacing: 6px;
+  padding-left: 12px;
+  position: relative;
+  page-break-after: avoid;
+}
+h2.section::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 5px; bottom: 5px;
+  width: 4px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+h2.section.break {
+  page-break-before: always;
+  margin-top: 0;
+}
+
+/* ============== ENTRY ============== */
+.entry { margin-bottom: 12px; }
+.entry + .entry { margin-top: 12px; }
+
+.entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  page-break-after: avoid;
+  margin-bottom: 3px;
+  gap: 12px;
+}
+.entry-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.entry-title {
+  font-size: 13pt;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: 0.5px;
+}
+.entry-role {
+  font-size: 10.5pt;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.entry-role::before {
+  content: "·";
+  margin-right: 5px;
+  color: var(--muted);
+  font-weight: 700;
+}
+.entry-time {
+  font-size: 10pt;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.entry-link {
+  font-size: 10pt;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.entry-link a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-line);
+}
+.entry-sub {
+  font-size: 10.5pt;
+  color: var(--ink);
+  margin: 4px 0 3px 0;
+  padding: 3px 10px;
+  background: var(--bg-soft);
+  border-radius: 3px;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+.entry-sub strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* ============== 方向 (pill 效果) ============== */
+h4.direction {
+  font-size: 11pt;
+  color: var(--accent-deep);
+  margin: 9px 0 4px 0;
+  font-weight: 700;
+  page-break-after: avoid;
+  padding: 3px 10px 3px 12px;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* ============== BULLET ============== */
+ul.bullet {
+  margin: 4px 0 6px 0;
+  padding-left: 14px;
+  list-style: none;
+}
+ul.bullet li {
+  position: relative;
+  margin-bottom: 6px;
+  line-height: 1.75;
+  text-align: left;
+  text-wrap: pretty;
+  color: var(--ink);
+  font-weight: 500;
+}
+ul.bullet li::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 9px;
+  width: 4px;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+ul.bullet strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* ============== 项目引言段 ============== */
+.intro {
+  font-size: 10.5pt;
+  color: var(--ink);
+  margin: 5px 0 7px 0;
+  line-height: 1.75;
+}
+
+/* ============== inline code（技术标签用） ============== */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5pt;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+}
+
+/* ============== 技能特长 ============== */
+.skills { margin: 4px 0 0 0; }
+.skill-item { margin-bottom: 8px; page-break-inside: avoid; }
+.skill-head {
+  font-size: 11pt;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.skill-num {
+  display: inline-block;
+  min-width: 24px;
+  padding: 1px 6px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 3px;
+  font-size: 8.5pt;
+  font-weight: 800;
+  font-family: 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+.skill-body {
+  font-size: 10pt;
+  color: var(--ink-2);
+  line-height: 1.7;
+  padding-left: 32px;
+  text-align: left;
+}
+.skill-body strong { color: var(--ink); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="name">王智林</div>
+  <div class="contact">
+    <span class="contact-item"><span class="label">TEL</span><span class="value">16629057092</span></span>
+    <span class="contact-sep">|</span>
+    <span class="contact-item"><span class="label">MAIL</span><span class="value">2903988117@qq.com</span></span>
+  </div>
+</div>
+
+<h2 class="section">教育背景</h2>
+<div class="entry">
+  <div class="entry-head">
+    <div class="entry-title-group">
+      <span class="entry-title">南开大学</span>
+      <span class="entry-role">软件工程</span>
+    </div>
+    <div class="entry-time">2023-09 ~ 2027-06</div>
+  </div>
+</div>
+
+<h2 class="section">实习经历</h2>
+
+<div class="entry">
+  <div class="entry-head">
+    <div class="entry-title-group">
+      <span class="entry-title">快手可灵</span>
+      <span class="entry-role">AI 应用开发实习生</span>
+    </div>
+    <div class="entry-time">2026-03-23 ~ 至今</div>
+  </div>
+  <div class="entry-sub"><strong>主要参与项目：KlingWork</strong>（可灵 Agent 生产力平台）</div>
+
+  <h4 class="direction">方向一 · MCP 生态接入能力建设</h4>
+  <ul class="bullet">
+    <li><strong>MCP 客户端完整实现</strong>：为产品打通 MCP 开放生态，让用户能把内外部服务自助接入 Agent——从服务器配置管理、连接生命周期到远程工具动态注入完整落地；重点打磨远程服务的授权体验，自动探测服务器认证方式，用户点一次「授权」即走完 OAuth 全流程。</li>
+    <li><strong>连接层优化</strong>：把「让模型看见工具」和「真正建连」拆开——工具清单单独缓存，注入时不必连上 server；模型实际调用时才按需借连接。连接放进池子跨对话复用，空闲一段时间再回收，stdio 子进程不再每轮重启，远程工具首调和审批续跑都明显更快。</li>
+  </ul>
+
+  <h4 class="direction">方向二 · 后台任务与技能生态</h4>
+  <ul class="bullet">
+    <li><strong>长耗时任务异步化</strong>：为解决视频生成这类长耗时工具占住整轮对话、任务随应用重启而丢失的问题，将图片生成、视频生成等统一为后台任务：工具调用立刻返回，任务落库、独立调度，完成后主动通知对话接续；应用重启后按中断阶段恢复，视频凭远程任务 ID 续跑。对话不再被阻塞，任务不再丢失。</li>
+    <li><strong>公共 Skill 的发现与安装</strong>：为解决三方技能无从发现与安装的问题，接入 skills.sh 公共技能生态，打通搜索、预览、安装链路：模型在对话中按需检索生态、先读技能文档确认用途再安装，装好后与本地技能同等被发现。Agent 能力可按需自助扩展，不必再等人工引入。</li>
+  </ul>
+
+  <h4 class="direction">方向三 · 浏览器使用能力建设</h4>
+  <ul class="bullet">
+    <li><strong>独立浏览器路径</strong>：给 Agent 一套独立浏览器，没装扩展也能上网操作。基于开源 browser-use 落地，把首次安装拆成环境检测 / 本体安装 / 内核安装三步，进度实时反馈，本机已有 Chrome 则跳过内核下载；再打磨 Skill：定位为扩展未就绪时的兜底，登录、验证码交还用户，模型不在独立窗口里空转。</li>
+    <li><strong>用户浏览器桥接</strong>：让 Agent 直接操作用户日常用的浏览器——正在看的那一页、登录态、已开标签都在，内网站点不必再登一次。负责客户端 WebSocket 端点开发：承接扩展接入、把工具调用下发到当前窗口；打磨 Skill：先探测扩展状态，就绪走桥、未就绪自动回退独立路径，不擅自关闭用户已开的标签。</li>
+  </ul>
+</div>
+
+<h2 class="section break">项目经历</h2>
+
+<div class="entry">
+  <div class="entry-head">
+    <div class="entry-title-group">
+      <span class="entry-title">LingCoWork</span>
+      <span class="entry-role">个人项目 · Go · React · Electron</span>
+    </div>
+    <div class="entry-link"><a href="https://github.com/guyi-a/LingCoWork">github.com/guyi-a/LingCoWork</a></div>
+  </div>
+  <div class="intro">基于 CloudWeGo eino ADK 自建的本地 Agent 工作站，在模型之上实现完整执行系统：多 Agent 拓扑、工具调用、分级审批、状态恢复与上下文压缩，覆盖文件处理、命令执行、资料检索、浏览器操作及代码修改、验证与审阅等真实工作区任务。Go 服务端、React 前端与 Electron 桌面端由一人实现。</div>
+  <ul class="bullet">
+    <li><strong>多 Agent 架构设计</strong>：采用 Supervisor + AgentAsTool 拓扑，将招聘搜索、简历分析、模拟出题等垂直能力按需委派给领域 Agent，并由只读 Explore 负责大范围代码探索；各子 Agent 使用独立上下文与提示词，执行事件实时回传并关联父级工具卡，避免领域知识和探索过程持续占用主 Agent 上下文。</li>
+    <li><strong>流式对话与分级审批</strong>：SSE 以服务端缓冲为权威源，断网、刷新都能重连续读、不丢内容。审批判定不依据工具名，而依据工具声明的调用后果（读写、破坏性、外联），未识别的调用默认转人工确认、不被静默放行；不可逆操作即使在全放行模式下也必须确认。中断状态持久化，重启后待审批任务仍能从断点继续。</li>
+    <li><strong>个性化与记忆</strong>：为解决常用指令反复重打、用户与项目偏好无法跨对话延续的问题——用户级自定义指令在对话框快捷选取、与输入内容拼装成完整指令一次发出；用户与项目两级记忆分别沉淀个人偏好与工作区约定，新对话自动携带。高频操作一键直达，Agent 越用越懂用户。</li>
+    <li><strong>长对话上下文压缩</strong>：为解决多轮长任务撑爆模型上下文的问题，压缩不删除任何历史消息，只生成一条结构化摘要——涵盖用户意图、任务进展、待办计划、技术要点与下一步交接；发给模型的上下文以摘要替换较早的历史、界面上照常显示完整历史；摘要滚动衔接前次压缩，多轮压缩不断层。长对话无限续跑，历史零丢失。</li>
+  </ul>
+</div>
+
+<h2 class="section">技能特长</h2>
+
+<div class="skills">
+  <div class="skill-item">
+    <div class="skill-head"><span class="skill-num">01</span> AI 应用开发</div>
+    <div class="skill-body">熟悉 <strong>CloudWeGo eino ADK</strong>、<strong>LangChain / LangGraph</strong> 等主流 Agent 编排框架；掌握 Prompt 工程、工具链编排与多 Agent 拓扑设计（Supervisor + AgentAsTool 嵌套调用）；能独立搭建完整 AI 应用，覆盖多轮工具循环、HITL 审批中断与恢复、长上下文压缩。</div>
+  </div>
+
+  <div class="skill-item">
+    <div class="skill-head"><span class="skill-num">02</span> 全栈开发与常用中间件</div>
+    <div class="skill-body">熟悉 <strong>Go</strong>（Gin、GORM）与 <strong>Python</strong>（FastAPI）高并发后端开发，掌握依赖注入与中间件设计；前端能用 <strong>React + TypeScript + Vite + Zustand</strong> 搭建现代 SPA、并具备 Electron 桌面壳打包能力；熟悉 <strong>MySQL</strong>（索引、事务、MVCC、锁机制、SQL 优化）与 <strong>Redis</strong>（数据结构、持久化、分布式锁）等常用中间件的使用场景与高可用原理。</div>
+  </div>
+
+  <div class="skill-item">
+    <div class="skill-head"><span class="skill-num">03</span> AI 工具应用</div>
+    <div class="skill-body">深度使用 <strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Cursor</strong> 完成日常开发——代码生成、跨文件重构与问题定位；会用规则文件、Skill 与 MCP 把项目约定和重复流程固化给 Agent，控制其行为边界与上下文开销；对这类工具的设计取舍有自己的判断——上下文如何收敛、危险操作如何分级、探索任务如何交给子 Agent。</div>
+  </div>
+
+
+</div>
+
+</body>
+</html>
