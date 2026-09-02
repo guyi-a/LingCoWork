@@ -32,7 +32,7 @@ export function WorkspaceTerminal({
   const [sessions, setSessions] = useState<TerminalSession[]>([
     { id: terminalSessionID(), label: "Terminal 1" },
   ]);
-  const [activeID, setActiveID] = useState(sessions[0].id);
+  const [activeID, setActiveID] = useState(() => sessions[0].id);
   const [metaByID, setMetaByID] = useState<Record<string, TerminalMeta>>({});
   const [listOpen, setListOpen] = useState(false);
   const activeSession = sessions.find((session) => session.id === activeID);

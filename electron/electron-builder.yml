@@ -18,6 +18,7 @@ extraResources:
     to: backend
     filter:
       - lingcowork-api
+      - lingcowork-api.exe
   - from: package-resources/web
     to: web
     filter:
@@ -45,5 +46,22 @@ dmg:
   title: "${productName} ${version}"
   artifactName: "${productName}-${version}-${arch}.${ext}"
   sign: false
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: dir
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-${arch}-setup.${ext}"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
 
 publish: null

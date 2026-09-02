@@ -40,6 +40,7 @@ func TestCORSMiddleware(t *testing.T) {
 	}{
 		{name: "packaged app", origin: "lingcowork://app", wantOrigin: "lingcowork://app"},
 		{name: "vite dev", origin: "http://localhost:5173", wantOrigin: "http://localhost:5173"},
+		{name: "browser extension", origin: "chrome-extension://ggnaffooacplgigkdjgmakggbbhjdcfj", wantOrigin: "chrome-extension://ggnaffooacplgigkdjgmakggbbhjdcfj"},
 		{name: "unknown origin", origin: "https://example.com", wantOrigin: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -12,11 +12,12 @@ import (
 	"sync"
 	"time"
 
+	winpty "github.com/aymanbagabas/go-pty"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
-func terminatePTY(cmd *exec.Cmd) {
+func terminatePTY(cmd *winpty.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
@@ -24,21 +25,24 @@ func terminatePTY(cmd *exec.Cmd) {
 }
 
 func loginShell() string {
+	for _, candidate := range []string{
+		"pwsh.exe",
+		"powershell.exe",
+		filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+	} {
+		if shellPath, err := exec.LookPath(candidate); err == nil {
+			if absolutePath, err := filepath.Abs(shellPath); err == nil {
+				return absolutePath
+			}
+			return shellPath
+		}
+	}
 	if shellPath := strings.TrimSpace(os.Getenv("COMSPEC")); filepath.IsAbs(shellPath) {
 		if info, err := os.Stat(shellPath); err == nil && !info.IsDir() {
 			return shellPath
 		}
 	}
-	for _, candidate := range []string{
-		"powershell.exe",
-		"pwsh.exe",
-		filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-	} {
-		if _, err := exec.LookPath(candidate); err == nil {
-			return candidate
-		}
-	}
-	if shellPath := os.Getenv("COMSPEC"); shellPath != "" {
+	if shellPath := strings.TrimSpace(os.Getenv("COMSPEC")); shellPath != "" {
 		return shellPath
 	}
 	return "cmd.exe"
@@ -67,22 +71,9 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 	conn.SetReadLimit(maxTerminalInputBytes)
 
 	shellPath := loginShell()
-
-	// Force the console into UTF-8 before the shell prints anything.
-	//
-	// Windows shells default to the system OEM codepage (936/GBK on Chinese
-	// installs), but the bytes are piped straight through to xterm.js, which
-	// always decodes UTF-8. The result is mojibake: cmd's banner "版本" is
-	// GBK B0 E6 B1 BE, which read as UTF-8 becomes "?汾".
-	//
-	// Setting the codepage in-shell (rather than transcoding the stream) also
-	// fixes *user* commands: `go run` and friends emit UTF-8 natively, so a
-	// blanket GBK->UTF-8 conversion would corrupt those instead.
-	var cmd *exec.Cmd
+	var shellArgs []string
 	if strings.Contains(strings.ToLower(shellPath), "powershell") ||
 		strings.Contains(strings.ToLower(shellPath), "pwsh") {
-		// $OutputEncoding governs what PowerShell writes down a pipe;
-		// OutputEncoding on [Console] governs native command output.
 		const prelude = "" +
 			"chcp 65001 > $null; " +
 			"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
@@ -90,31 +81,34 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 			"$OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
 			"$PSDefaultParameterValues['*:Encoding'] = 'utf8'; " +
 			"Clear-Host"
-		cmd = exec.Command(shellPath, "-NoExit", "-Command", prelude)
+		shellArgs = []string{"-NoExit", "-Command", prelude}
 	} else {
-		// cmd.exe: /k runs chcp then stays interactive. Output is swallowed
-		// so the session doesn't open with "Active code page: 65001".
-		cmd = exec.Command(shellPath, "/k", "chcp 65001 > nul")
+		shellArgs = []string{"/k", "chcp 65001 > nul"}
 	}
 
+	ptmx, err := winpty.New()
+	if err != nil {
+		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
+		return
+	}
+	var closePTYOnce sync.Once
+	closePTY := func() {
+		closePTYOnce.Do(func() {
+			_ = ptmx.Close()
+		})
+	}
+	defer closePTY()
+
+	cols := clampTerminalDimension(queryInt(c, "cols", 100), 20, 500)
+	rows := clampTerminalDimension(queryInt(c, "rows", 30), 5, 200)
+	if err := ptmx.Resize(cols, rows); err != nil {
+		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
+		return
+	}
+
+	cmd := ptmx.Command(shellPath, shellArgs...)
 	cmd.Dir = root
 	cmd.Env = terminalEnvironment()
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
-		return
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
-		return
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
-		return
-	}
 
 	if err := cmd.Start(); err != nil {
 		_ = conn.WriteJSON(gin.H{"type": "error", "message": err.Error()})
@@ -145,22 +139,7 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 		defer close(outputDone)
 		buf := make([]byte, 32*1024)
 		for {
-			n, readErr := stdout.Read(buf)
-			if n > 0 {
-				if err := writeBinary(append([]byte(nil), buf[:n]...)); err != nil {
-					return
-				}
-			}
-			if readErr != nil {
-				return
-			}
-		}
-	}()
-
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, readErr := stderr.Read(buf)
+			n, readErr := ptmx.Read(buf)
 			if n > 0 {
 				if err := writeBinary(append([]byte(nil), buf[:n]...)); err != nil {
 					return
@@ -175,6 +154,11 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 	waitDone := make(chan int, 1)
 	go func() {
 		waitErr := cmd.Wait()
+		// Closing ConPTY releases its output pipe so the reader can finish.
+		// go-pty's Windows Close is not idempotent: calling it twice closes the
+		// same HPCON twice and can terminate the entire backend with
+		// STATUS_HEAP_CORRUPTION (0xC0000374).
+		closePTY()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -205,13 +189,16 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 			if len(data) > maxTerminalInputBytes {
 				continue
 			}
-			if _, err := stdin.Write(data); err != nil {
+			if _, err := ptmx.Write(data); err != nil {
 				clientClosed = true
 			}
 		case websocket.TextMessage:
 			var control terminalControl
 			if json.Unmarshal(data, &control) == nil && control.Type == "resize" {
-				// Windows 不支持终端大小调整
+				_ = ptmx.Resize(
+					clampTerminalDimension(control.Cols, 20, 500),
+					clampTerminalDimension(control.Rows, 5, 200),
+				)
 			}
 		}
 		if clientClosed {
@@ -221,9 +208,7 @@ func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 
 	if clientClosed {
 		terminatePTY(cmd)
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
+		closePTY()
 	}
 	<-waitDone
 	<-outputDone

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, type WriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import net from 'node:net';
@@ -44,7 +44,8 @@ export class BackendSidecar {
         ...process.env,
         LINGCOWORK_HOME: this.options.runtimeHome,
       },
-      detached: true,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.child = child;
@@ -153,6 +154,18 @@ function isPortOpen(port: number, host: string): Promise<boolean> {
 }
 
 function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    execFile(
+      'taskkill.exe',
+      ['/PID', String(pid), '/T', '/F'],
+      { windowsHide: true },
+      () => {
+        // The process may already have exited.
+      },
+    );
+    return;
+  }
+
   try {
     process.kill(-pid, signal);
   } catch {

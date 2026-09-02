@@ -282,7 +282,7 @@ async function ensureRuntimeConfig(): Promise<boolean> {
     title: 'Set up LingCoWork',
     message: 'LingCoWork needs an environment file before its first launch.',
     detail:
-      'Import an existing .env file, or create a template in Application Support and fill in DEEPSEEK_API_KEY.',
+      'Import an existing .env file, or create a template in the application data directory and fill in DEEPSEEK_API_KEY.',
     buttons: ['Import .env', 'Create template and exit'],
     defaultId: 0,
     cancelId: 1,
@@ -318,7 +318,10 @@ async function ensureRuntimeConfig(): Promise<boolean> {
 
 async function startPackagedBackend(): Promise<void> {
   const runtimeHome = app.getPath('userData');
-  const executablePath = path.join(process.resourcesPath, 'backend', 'lingcowork-api');
+  const executableName = process.platform === 'win32'
+    ? 'lingcowork-api.exe'
+    : 'lingcowork-api';
+  const executablePath = path.join(process.resourcesPath, 'backend', executableName);
 
   backendSidecar = new BackendSidecar({
     executablePath,

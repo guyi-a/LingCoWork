@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -85,6 +86,10 @@ func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (
 		cmd = exec.Command(shell, "/C", command)
 	}
 	cmd.Dir = cwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 
 	stdoutBuf := &boundedBuffer{max: maxShellOutputBytes}
 	stderrBuf := &boundedBuffer{max: maxShellOutputBytes}

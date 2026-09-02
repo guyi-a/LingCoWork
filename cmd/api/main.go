@@ -47,6 +47,7 @@ const (
 	// 用户级长期记忆。项目级的那份在工作区根下，路径由 memory.ProjectPath 算。
 	userMemoryPath   = ".lingcowork/memory.md"
 	addr             = "127.0.0.1:9001"
+	bridgeAddr       = "127.0.0.1:17323"
 	oauthRedirectURL = "http://localhost:9001/mcp/oauth/callback"
 	shutdownTimeout  = 5 * time.Second
 )
@@ -56,10 +57,12 @@ func corsMiddleware() gin.HandlerFunc {
 		origin := c.GetHeader("Origin")
 		if origin == "http://localhost:5173" ||
 			origin == "http://127.0.0.1:5173" ||
-			origin == "lingcowork://app" {
+			origin == "lingcowork://app" ||
+			strings.HasPrefix(origin, "chrome-extension://") ||
+			strings.HasPrefix(origin, "edge-extension://") {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Content-Type")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, X-Kro-Client-Sig, X-Bridge-Token")
 			c.Header("Access-Control-Max-Age", "600")
 		}
 		if c.Request.Method == http.MethodOptions {
@@ -290,6 +293,10 @@ func main() {
 	browserbridge.Register(r, bridgeSvc)
 
 	srv := &http.Server{Addr: addr, Handler: r}
+	bridgeRouter := gin.New()
+	bridgeRouter.Use(gin.Logger(), gin.Recovery(), corsMiddleware())
+	browserbridge.Register(bridgeRouter, bridgeSvc)
+	bridgeSrv := &http.Server{Addr: bridgeAddr, Handler: bridgeRouter}
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -298,6 +305,14 @@ func main() {
 			serverErr <- err
 		}
 		close(serverErr)
+	}()
+	go func() {
+		log.Printf("browser bridge discovery listening on %s", bridgeAddr)
+		if err := bridgeSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// Keep the primary API usable if another local bridge already owns
+			// the extension's preferred discovery port.
+			log.Printf("browser bridge discovery listener unavailable: %v", err)
+		}
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -322,6 +337,9 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http shutdown: %v", err)
+	}
+	if err := bridgeSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("browser bridge shutdown: %v", err)
 	}
 
 	if sqlDB, err := db.DB(); err == nil {

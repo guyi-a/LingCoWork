@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	git.corp.kuaishou.com/klingai-agentk/agentk-sdk.git/go v0.3.2
+	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/cloudwego/eino v0.9.1
 	github.com/cloudwego/eino-ext/components/model/claude v0.1.20

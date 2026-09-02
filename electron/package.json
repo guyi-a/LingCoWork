@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "tsc && electron .",
     "dist:mac": "electron-builder --config electron-builder.yml --mac dir dmg --arm64",
+    "dist:win": "electron-builder --config electron-builder.yml --win --x64",
     "postinstall": "node scripts/patch-electron-bundle-id.mjs"
   },
   "devDependencies": {
