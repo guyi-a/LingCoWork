@@ -15,6 +15,14 @@ Thumbs.db
 
 # Dependencies
 node_modules/
+
+# pnpm's content-addressable store. It lands inside the project because the
+# global store lives on another volume, and pnpm requires the store and
+# node_modules to share a filesystem so it can hard-link packages.
+# Hundreds of MB of rebuildable cache — never commit, and note that a
+# `git clean -fdx` will wipe it (every pnpm install re-downloads afterwards).
+.pnpm-store/
+
 __pycache__/
 *.pyc
 *.pyo
@@ -31,6 +39,18 @@ dist/
 build/
 target/
 *.egg-info/
+
+# Compiled Go binaries. `go build ./cmd/api` drops api.exe in the repo root
+# by default; the same for the other cmd/ targets.
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/api
+/coding-eval
+/rag-index
+/rag-search
 
 # Logs
 *.log

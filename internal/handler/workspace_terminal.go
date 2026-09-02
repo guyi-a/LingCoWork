@@ -1,3 +1,5 @@
+//go:build !windows
+
 package handler
 
 import (
@@ -6,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,26 +17,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
-
-const maxTerminalInputBytes = 64 * 1024
-
-var terminalUpgrader = websocket.Upgrader{
-	ReadBufferSize:  16 * 1024,
-	WriteBufferSize: 16 * 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		return origin == "" || origin == "null" ||
-			strings.HasPrefix(origin, "lingcowork://") ||
-			origin == "http://localhost:5173" ||
-			origin == "http://127.0.0.1:5173"
-	},
-}
-
-type terminalControl struct {
-	Type string `json:"type"`
-	Cols int    `json:"cols,omitempty"`
-	Rows int    `json:"rows,omitempty"`
-}
 
 func (h *WorkspaceHandler) Terminal(c *gin.Context) {
 	root, _, err := h.svc.Root(
@@ -180,34 +161,10 @@ func loginShell() string {
 	return "/bin/sh"
 }
 
-func terminalEnvironment() []string {
-	env := append([]string(nil), os.Environ()...)
-	env = append(env, "TERM=xterm-256color", "COLORTERM=truecolor")
-	return env
-}
-
 func terminatePTY(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGHUP)
 	_ = cmd.Process.Kill()
-}
-
-func queryInt(c *gin.Context, key string, fallback int) int {
-	value, err := strconv.Atoi(c.Query(key))
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func clampTerminalDimension(value, minimum, maximum int) int {
-	if value < minimum {
-		return minimum
-	}
-	if value > maximum {
-		return maximum
-	}
-	return value
 }

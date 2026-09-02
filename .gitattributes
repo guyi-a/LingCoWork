@@ -1,0 +1,58 @@
+# Normalise text files to LF in the repository.
+* text=auto eol=lf
+
+# Files that are parsed byte-exactly and must never be converted to CRLF
+# on Windows checkouts (core.autocrlf=true would otherwise break them).
+*.md text eol=lf
+*.go text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+# Windows-native scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries — never line-ending converted, never diffed as text.
+# `* text=auto` above would otherwise let Git guess, and a file it wrongly
+# guesses as text gets its CRLF/LF bytes rewritten on checkout, which
+# silently corrupts it.
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+
+# Documents.
+*.pdf binary
+*.docx binary
+*.doc binary
+*.xlsx binary
+*.xls binary
+*.pptx binary
+*.ppt binary
+
+# Images.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.bmp binary
+
+# Fonts.
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+
+# Archives and databases.
+*.zip binary
+*.gz binary
+*.tar binary
+*.7z binary
+*.db binary
+*.sqlite binary

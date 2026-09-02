@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 package tools
 
@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -29,8 +28,6 @@ func newRunCommandTool(d *fsDeps) (tool.BaseTool, error) {
 			return nil, err
 		}
 
-		// cwd 一律要求 workspace 内 —— 执行命令不同于读文件，绝对路径逃逸的
-		// 影响面太大，用户已在 GPT review 里拍板收紧到这个边界。
 		ws, err := d.resolveWorkspace(ctx)
 		if err != nil {
 			return nil, err
@@ -39,8 +36,6 @@ func newRunCommandTool(d *fsDeps) (tool.BaseTool, error) {
 		if cwd == "" {
 			cwd = ws
 		} else {
-			// scope.Resolve 允许 workspace-相对或落在 workspace 内的绝对路径，
-			// 其他一律拒绝。
 			abs, err := scope.Resolve(ws, cwd)
 			if err != nil {
 				return nil, fmt.Errorf("cwd: %w", err)
@@ -68,23 +63,28 @@ func newRunCommandTool(d *fsDeps) (tool.BaseTool, error) {
 
 	return utils.InferTool(
 		"run_command",
-		"Execute a shell command line via /bin/sh -c. Supports pipes, redirects, subshells and env prefixes. Runs inside the current workspace (cwd must resolve inside it — absolute paths outside are rejected). Normal commands require approval in manual and accept-write modes; destructive commands (sudo / rm -rf / dd / mkfs / diskutil erase / git reset --hard / git push --force / curl | sh, etc.) require explicit approval even in auto mode. stdout and stderr are captured separately, each truncated to 64 KiB; when you expect large output, redirect to a file and read it back with read_file (which supports offset+limit for chunked reads). If output looks garbled for Chinese text, prefix the command with LANG=en_US.UTF-8. Timeout defaults to 60s, max 300s; on timeout the whole process group is killed with SIGKILL so no orphaned subprocess survives.",
+		"Execute a shell command line via PowerShell/cmd.exe. Supports pipes, redirects, subshells and env prefixes. Runs inside the current workspace (cwd must resolve inside it — absolute paths outside are rejected). Normal commands require approval in manual and accept-write modes; destructive commands require explicit approval even in auto mode. stdout and stderr are captured separately, each truncated to 64 KiB; when you expect large output, redirect to a file and read it back with read_file. Timeout defaults to 60s, max 300s; on timeout the process is killed.",
 		fn,
 	)
 }
 
-// runShell forks /bin/sh -c <command> in its own process group, captures
-// stdout/stderr into bounded buffers, and enforces the timeout by killing the
-// entire group. Returning nil error means the command was successfully
-// launched — a non-zero exit code lives in Output.ExitCode; a real error
-// (fork failure, pipe setup) is what the error return is for.
+// runShell Windows 特定实现
 func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (*RunCommandOutput, error) {
-	// 我们不用 exec.CommandContext 的自动 Kill 机制 —— 它只 kill 主子进程
-	// (sh)，孙子进程（比如 sh 拉起来的 python）会成孤儿。手动管超时，超时时
-	// 用 syscall.Kill(-pgid, SIGKILL) 把整棵进程组端掉。
-	cmd := exec.Command("/bin/sh", "-c", command)
+	// Windows 使用 PowerShell 或 cmd.exe 执行命令
+	shell := "powershell"
+	if _, err := exec.LookPath(shell); err != nil {
+		shell = "cmd"
+	}
+
+	var cmd *exec.Cmd
+	if shell == "powershell" {
+		// PowerShell: 使用 -Command 参数
+		cmd = exec.Command(shell, "-Command", command)
+	} else {
+		// cmd.exe: 使用 /C 参数
+		cmd = exec.Command(shell, "/C", command)
+	}
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdoutBuf := &boundedBuffer{max: maxShellOutputBytes}
 	stderrBuf := &boundedBuffer{max: maxShellOutputBytes}
@@ -93,7 +93,7 @@ func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start /bin/sh: %w", err)
+		return nil, fmt.Errorf("start %s: %w", shell, err)
 	}
 
 	done := make(chan error, 1)
@@ -104,16 +104,15 @@ func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (
 	select {
 	case <-time.After(timeout):
 		timedOut = true
-		// 负 pid 传给 Kill = 杀整个进程组。Setpgid 让 sh 成为 pgid = 自己的
-		// pid 的组长，所有它 fork 出来的孙子进程都属于这个组。
+		// Windows: 直接杀进程
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Process.Kill()
 		}
-		waitErr = <-done // Wait 会因为 SIGKILL 返回一个 ExitError，正常收尾
+		waitErr = <-done
 	case <-ctx.Done():
-		// 请求侧取消（比如整个 run 被 abort），同样清理进程组。
+		// 请求侧取消
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Process.Kill()
 		}
 		waitErr = <-done
 	case err := <-done:
@@ -126,7 +125,6 @@ func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (
 		if ee, ok := waitErr.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
 		} else {
-			// pipe / IO 层的真错误 —— 少见但要暴露出来。
 			return nil, fmt.Errorf("wait: %w", waitErr)
 		}
 	}
@@ -149,9 +147,7 @@ func runShell(ctx context.Context, command, cwd string, timeout time.Duration) (
 	}, nil
 }
 
-// boundedBuffer 是一个只保留前 max 字节的 io.Writer。超出的部分丢弃，只记
-// 一个 truncated 标记 —— 相比 bytes.Buffer 无上限，agent 在跑 `cat huge.pdf`
-// 之类的情况下不会撑爆 process memory 或 SSE 帧。
+// Windows 版本的 boundedBuffer
 type boundedBuffer struct {
 	max     int
 	buf     bytes.Buffer
@@ -162,12 +158,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	remaining := b.max - b.buf.Len()
 	if remaining <= 0 {
 		b.dropped = true
-		return len(p), nil // 假装写成功，让上游继续读子进程管道
+		return len(p), nil
 	}
 	if len(p) <= remaining {
 		return b.buf.Write(p)
 	}
-	// 只吸收前 remaining 字节，剩下丢掉但依旧返回 len(p) 让 pipe 不会阻塞。
 	if _, err := b.buf.Write(p[:remaining]); err != nil {
 		return 0, err
 	}

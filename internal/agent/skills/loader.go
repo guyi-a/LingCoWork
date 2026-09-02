@@ -374,7 +374,16 @@ func ParseDocument(content string) (Skill, error) {
 // parseSkill splits a SKILL.md string into its YAML frontmatter and body.
 // Only name and description keys are recognised; nothing fancier because
 // the format is intentionally minimal.
+// Line endings are normalised to \n first: SKILL.md files checked out on
+// Windows with core.autocrlf=true arrive as CRLF, and a parser that only
+// matched "---\n" rejected every builtin skill with "missing frontmatter
+// delimiter". A UTF-8 BOM is stripped for the same reason — editors on
+// Windows add one silently and it would hide the opening delimiter.
 func parseSkill(s string) (Skill, error) {
+	s = strings.TrimPrefix(s, "\ufeff")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
 	if !strings.HasPrefix(s, "---\n") {
 		return Skill{}, errors.New("missing frontmatter delimiter")
 	}
