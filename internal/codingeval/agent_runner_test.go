@@ -57,12 +57,31 @@ func TestRunAgentUsesIsolatedWorkspaceAndAgentAPI(t *testing.T) {
 	newConversationID = func() string { return "eval-test" }
 	defer func() { newConversationID = original }()
 
-	result, err := RunAgent(t.Context(), task, AgentRunOptions{BaseURL: server.URL})
+	artifactDir := filepath.Join(t.TempDir(), "artifacts")
+	result, err := RunAgent(t.Context(), task, AgentRunOptions{
+		BaseURL:     server.URL,
+		ArtifactDir: artifactDir,
+		Experiment:  &ExperimentRun{Experiment: "test", Variant: "candidate", Iteration: 1},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Driver != "lingcowork-agent" || result.Status != "passed" ||
 		result.Action.ExitCode != 0 || !result.Score.Passed {
 		t.Fatalf("result=%#v", result)
+	}
+	if result.Artifacts == nil || result.Artifacts.Events == "" {
+		t.Fatalf("artifacts=%#v", result.Artifacts)
+	}
+	eventData, err := os.ReadFile(filepath.FromSlash(result.Artifacts.Events))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event AgentEvent
+	if err := json.Unmarshal(eventData[:len(eventData)-1], &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "done" || event.ReceivedAt.IsZero() {
+		t.Fatalf("event=%#v", event)
 	}
 }

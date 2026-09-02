@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -21,8 +20,10 @@ import (
 const maxCommandOutput = 64 * 1024
 
 type RunOptions struct {
-	LedgerPath string
-	Keep       bool
+	LedgerPath  string
+	ArtifactDir string
+	Experiment  *ExperimentRun
+	Keep        bool
 }
 
 type CommandResult struct {
@@ -55,10 +56,24 @@ type AgentMetrics struct {
 	ApprovalInterrupts int `json:"approval_interrupts"`
 }
 
+type ExperimentRun struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
+	Iteration  int    `json:"iteration"`
+}
+
+type ArtifactRefs struct {
+	Result         string `json:"result,omitempty"`
+	Events         string `json:"events,omitempty"`
+	WorkspacePatch string `json:"workspace_patch,omitempty"`
+}
+
 type RunResult struct {
 	TaskID             string          `json:"task_id"`
 	Title              string          `json:"title"`
 	Driver             string          `json:"driver"`
+	Experiment         *ExperimentRun  `json:"experiment_run,omitempty"`
+	Artifacts          *ArtifactRefs   `json:"artifacts,omitempty"`
 	ApprovalMode       string          `json:"approval_mode,omitempty"`
 	StartedAt          time.Time       `json:"started_at"`
 	DurationMS         int64           `json:"duration_ms"`
@@ -84,13 +99,28 @@ func FindTask(c Catalog, id string) (Task, bool) {
 
 func Run(ctx context.Context, task Task, opts RunOptions) (result RunResult, err error) {
 	start := time.Now()
-	result = RunResult{TaskID: task.ID, Title: task.Title, Driver: "reference-command", StartedAt: start, Status: "error"}
+	result = RunResult{
+		TaskID: task.ID, Title: task.Title, Driver: "reference-command",
+		Experiment: cloneExperimentRun(opts.Experiment), StartedAt: start, Status: "error",
+	}
+	var root, source, worktree string
 	defer func() {
 		result.DurationMS = time.Since(start).Milliseconds()
+		if artifactErr := persistRunArtifacts(opts.ArtifactDir, worktree, nil, &result); artifactErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist artifacts: %w", artifactErr))
+			result.Status = "error"
+			result.Error = errors.Join(errorFromString(result.Error), artifactErr).Error()
+		}
 		if opts.LedgerPath != "" {
 			if ledgerErr := AppendLedger(opts.LedgerPath, result); ledgerErr != nil {
 				err = errors.Join(err, fmt.Errorf("append ledger: %w", ledgerErr))
 			}
+		}
+		if root != "" && !opts.Keep {
+			if source != "" && worktree != "" {
+				_ = exec.Command("git", "-C", source, "worktree", "remove", "--force", worktree).Run()
+			}
+			_ = os.RemoveAll(root)
 		}
 	}()
 
@@ -104,16 +134,14 @@ func Run(ctx context.Context, task Task, opts RunOptions) (result RunResult, err
 		return result, err
 	}
 
-	root, err := os.MkdirTemp("", "coding-eval-"+task.ID+"-")
+	root, err = os.MkdirTemp("", "coding-eval-"+task.ID+"-")
 	if err != nil {
 		result.Error = err.Error()
 		return result, err
 	}
-	source := filepath.Join(root, "source")
-	worktree := filepath.Join(root, "worktree")
-	if !opts.Keep {
-		defer os.RemoveAll(root)
-	} else {
+	source = filepath.Join(root, "source")
+	worktree = filepath.Join(root, "worktree")
+	if opts.Keep {
 		result.Worktree = worktree
 	}
 
@@ -121,10 +149,6 @@ func Run(ctx context.Context, task Task, opts RunOptions) (result RunResult, err
 		result.Error = err.Error()
 		return result, err
 	}
-	if !opts.Keep {
-		defer exec.Command("git", "-C", source, "worktree", "remove", "--force", worktree).Run()
-	}
-
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(task.TimeoutSeconds)*time.Second)
 	defer cancel()
 	result.Action = runShell(runCtx, "action", task.Fixture.Command, worktree)
@@ -172,6 +196,7 @@ func createFixture(ctx context.Context, source, worktree string, files map[strin
 		{"init", "-q"},
 		{"config", "user.email", "coding-eval@localhost"},
 		{"config", "user.name", "Coding Eval"},
+		{"config", "core.autocrlf", "false"},
 		{"add", "."},
 		{"commit", "-qm", "fixture baseline"},
 		{"worktree", "add", "--detach", worktree, "HEAD"},
@@ -187,9 +212,8 @@ func createFixture(ctx context.Context, source, worktree string, files map[strin
 
 func runShell(ctx context.Context, name, command, cwd string) CommandResult {
 	result := CommandResult{Name: name, Command: command, ExitCode: -1}
-	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd := newShellCommand(command)
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	start := time.Now()
@@ -204,7 +228,7 @@ func runShell(ctx context.Context, name, command, cwd string) CommandResult {
 		result.ExitCode = exitCode(err)
 	case <-ctx.Done():
 		result.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		killShellCommand(cmd)
 		<-done
 	}
 	result.DurationMS = time.Since(start).Milliseconds()

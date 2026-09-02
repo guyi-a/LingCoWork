@@ -97,6 +97,21 @@ go run ./cmd/coding-eval run-agent --base-url http://127.0.0.1:9001 smoke-fix-ty
 默认台账写入 `.coding-eval/ledger.jsonl`（已 gitignore）；可用
 `go run ./cmd/coding-eval summary` 汇总。
 
+对比实验使用同一个 experiment 名称分别记录 baseline 和 candidate；`repetitions` 会为每个
+任务生成可配对的 iteration：
+
+```bash
+go run ./cmd/coding-eval run-suite --driver agent --experiment agent-v1 --variant baseline --repetitions 3
+# 启动或配置待测版本后：
+go run ./cmd/coding-eval run-suite --driver agent --experiment agent-v1 --variant candidate --repetitions 3
+go run ./cmd/coding-eval compare --experiment agent-v1 --baseline baseline --candidate candidate
+```
+
+实验产物默认保存到
+`.coding-eval/artifacts/<experiment>/<variant>/<task>/<iteration>/`，包括结构化结果、
+Agent SSE 事件和最终 workspace patch。第一阶段的通过/失败仍由确定性的 verify 命令、
+Git diff 限制和 forbidden paths 决定；事件格式为后续 Judge 扩展预留。
+
 ## 技术栈
 
 | 层 | 技术 |

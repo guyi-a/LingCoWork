@@ -19,10 +19,12 @@ import (
 )
 
 type AgentRunOptions struct {
-	BaseURL    string
-	LedgerPath string
-	Keep       bool
-	Timeout    time.Duration
+	BaseURL     string
+	LedgerPath  string
+	ArtifactDir string
+	Experiment  *ExperimentRun
+	Keep        bool
+	Timeout     time.Duration
 }
 
 var newConversationID = func() string { return "eval-" + uuid.NewString() }
@@ -35,14 +37,28 @@ func RunAgent(ctx context.Context, task Task, opts AgentRunOptions) (result RunR
 	start := time.Now()
 	result = RunResult{
 		TaskID: task.ID, Title: task.Title, Driver: "lingcowork-agent",
+		Experiment:   cloneExperimentRun(opts.Experiment),
 		ApprovalMode: "auto", StartedAt: start, Status: "error",
 	}
+	var root, source, worktree string
+	var events []AgentEvent
 	defer func() {
 		result.DurationMS = time.Since(start).Milliseconds()
+		if artifactErr := persistRunArtifacts(opts.ArtifactDir, worktree, events, &result); artifactErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist artifacts: %w", artifactErr))
+			result.Status = "error"
+			result.Error = errors.Join(errorFromString(result.Error), artifactErr).Error()
+		}
 		if opts.LedgerPath != "" {
 			if ledgerErr := AppendLedger(opts.LedgerPath, result); ledgerErr != nil {
 				err = errors.Join(err, fmt.Errorf("append ledger: %w", ledgerErr))
 			}
+		}
+		if root != "" && !opts.Keep {
+			if source != "" && worktree != "" {
+				_ = exec.Command("git", "-C", source, "worktree", "remove", "--force", worktree).Run()
+			}
+			_ = os.RemoveAll(root)
 		}
 	}()
 	if err := task.Validate(); err != nil {
@@ -61,26 +77,20 @@ func RunAgent(ctx context.Context, task Task, opts AgentRunOptions) (result RunR
 		return result, err
 	}
 
-	root, err := os.MkdirTemp("", "coding-agent-eval-"+task.ID+"-")
+	root, err = os.MkdirTemp("", "coding-agent-eval-"+task.ID+"-")
 	if err != nil {
 		result.Error = err.Error()
 		return result, err
 	}
-	source := filepath.Join(root, "source")
-	worktree := filepath.Join(root, "worktree")
-	if !opts.Keep {
-		defer os.RemoveAll(root)
-	} else {
+	source = filepath.Join(root, "source")
+	worktree = filepath.Join(root, "worktree")
+	if opts.Keep {
 		result.Worktree = worktree
 	}
 	if err = createFixture(ctx, source, worktree, task.Fixture.Files); err != nil {
 		result.Error = err.Error()
 		return result, err
 	}
-	if !opts.Keep {
-		defer exec.Command("git", "-C", source, "worktree", "remove", "--force", worktree).Run()
-	}
-
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = time.Duration(task.TimeoutSeconds) * time.Second
@@ -101,9 +111,10 @@ func RunAgent(ctx context.Context, task Task, opts AgentRunOptions) (result RunR
 	conversationID := newConversationID()
 	defer deleteEvalConversation(client, baseURL, conversationID)
 	actionStart := time.Now()
-	metrics, convergenceStopped, agentErr := runAgentConversation(
+	metrics, convergenceStopped, capturedEvents, agentErr := runAgentConversation(
 		runCtx, client, baseURL, projectID, conversationID, task.EffectivePrompt(),
 	)
+	events = capturedEvents
 	result.Metrics = metrics
 	result.ConvergenceStopped = convergenceStopped
 	result.Action = CommandResult{
@@ -166,8 +177,9 @@ func runAgentConversation(
 	ctx context.Context,
 	client *http.Client,
 	baseURL, projectID, conversationID, prompt string,
-) (AgentMetrics, bool, error) {
+) (AgentMetrics, bool, []AgentEvent, error) {
 	var metrics AgentMetrics
+	var events []AgentEvent
 	convergenceStopped := false
 	endpoint := fmt.Sprintf(
 		"%s/chat/%s?project_id=%s",
@@ -178,19 +190,19 @@ func runAgentConversation(
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return metrics, convergenceStopped, err
+		return metrics, convergenceStopped, events, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	res, err := client.Do(req)
 	if err != nil {
-		return metrics, convergenceStopped, err
+		return metrics, convergenceStopped, events, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		var body bytes.Buffer
 		_, _ = body.ReadFrom(res.Body)
-		return metrics, convergenceStopped, fmt.Errorf("chat API status %d: %s", res.StatusCode, strings.TrimSpace(body.String()))
+		return metrics, convergenceStopped, events, fmt.Errorf("chat API status %d: %s", res.StatusCode, strings.TrimSpace(body.String()))
 	}
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
@@ -209,6 +221,11 @@ func runAgentConversation(
 		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &frame) != nil {
 			continue
 		}
+		events = append(events, AgentEvent{
+			ReceivedAt: time.Now().UTC(),
+			Type:       frame.Type, Name: frame.Name, Content: frame.Content,
+			Message: frame.Message, Error: frame.Error,
+		})
 		switch frame.Type {
 		case "tool_call":
 			metrics.ToolCalls++
@@ -223,23 +240,23 @@ func runAgentConversation(
 				convergenceStopped = true
 			}
 		case "done":
-			return metrics, convergenceStopped, nil
+			return metrics, convergenceStopped, events, nil
 		case "approval_required", "question_required", "plan_required":
 			if frame.Type == "approval_required" {
 				metrics.ApprovalInterrupts++
 			}
-			return metrics, convergenceStopped, fmt.Errorf("agent eval stopped for interactive input: %s", frame.Type)
+			return metrics, convergenceStopped, events, fmt.Errorf("agent eval stopped for interactive input: %s", frame.Type)
 		case "error":
 			if frame.Message == "" {
 				frame.Message = frame.Error
 			}
-			return metrics, convergenceStopped, fmt.Errorf("agent stream: %s", frame.Message)
+			return metrics, convergenceStopped, events, fmt.Errorf("agent stream: %s", frame.Message)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return metrics, convergenceStopped, err
+		return metrics, convergenceStopped, events, err
 	}
-	return metrics, convergenceStopped, fmt.Errorf("agent stream ended without done frame")
+	return metrics, convergenceStopped, events, fmt.Errorf("agent stream ended without done frame")
 }
 
 func hasForbiddenViolation(score Score) bool {

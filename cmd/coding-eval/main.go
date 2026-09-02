@@ -39,6 +39,8 @@ func run(args []string) error {
 		return runSuite(args[1:])
 	case "summary":
 		return summary(args[1:])
+	case "compare":
+		return compare(args[1:])
 	case "schema":
 		data, err := codingeval.TaskSchema()
 		if err == nil {
@@ -52,7 +54,7 @@ func run(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: coding-eval <list|validate|run|run-agent|run-suite|summary|schema> [options]")
+	fmt.Fprintln(os.Stderr, "usage: coding-eval <list|validate|run|run-agent|run-suite|summary|compare|schema> [options]")
 }
 
 func runAgentTask(args []string) error {
@@ -100,8 +102,18 @@ func runSuite(args []string) error {
 	baseURL := flags.String("base-url", "http://127.0.0.1:9001", "running LingCoWork API base URL for agent driver")
 	timeout := flags.Duration("timeout", 5*time.Minute, "per-agent-task wall-clock timeout")
 	full := flags.Bool("full", false, "include enabled tasks outside the smoke baseline")
+	experiment := flags.String("experiment", "", "experiment id for comparable runs")
+	variant := flags.String("variant", "", "variant name within the experiment")
+	repetitions := flags.Int("repetitions", 1, "number of times to run each task")
+	artifactDir := flags.String("artifact-dir", filepath.Join(".coding-eval", "artifacts"), "artifact root for experiment runs")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if (*experiment == "") != (*variant == "") {
+		return fmt.Errorf("experiment and variant must be provided together")
+	}
+	if *repetitions < 1 || *repetitions > 100 {
+		return fmt.Errorf("repetitions must be in [1,100]")
 	}
 	catalog, err := loadCatalog(*catalogPath)
 	if err != nil {
@@ -112,21 +124,37 @@ func runSuite(args []string) error {
 		if !task.Enabled || (!*full && !task.Baseline.Included) {
 			continue
 		}
-		var result codingeval.RunResult
-		if *driver == "agent" {
-			result, err = codingeval.RunAgent(context.Background(), task, codingeval.AgentRunOptions{
-				BaseURL: *baseURL, LedgerPath: *ledger, Timeout: *timeout,
-			})
-		} else if *driver == "reference" {
-			result, err = codingeval.Run(context.Background(), task, codingeval.RunOptions{
-				LedgerPath: *ledger,
-			})
-		} else {
-			return fmt.Errorf("driver must be reference or agent")
-		}
-		fmt.Printf("%-32s %s\n", task.ID, result.Status)
-		if err != nil || result.Status != "passed" {
-			failed++
+		for iteration := 1; iteration <= *repetitions; iteration++ {
+			var metadata *codingeval.ExperimentRun
+			runArtifactDir := ""
+			if *experiment != "" {
+				metadata = &codingeval.ExperimentRun{
+					Experiment: *experiment,
+					Variant:    *variant,
+					Iteration:  iteration,
+				}
+				if err := metadata.Validate(); err != nil {
+					return err
+				}
+				runArtifactDir = *artifactDir
+			}
+			var result codingeval.RunResult
+			if *driver == "agent" {
+				result, err = codingeval.RunAgent(context.Background(), task, codingeval.AgentRunOptions{
+					BaseURL: *baseURL, LedgerPath: *ledger, ArtifactDir: runArtifactDir,
+					Experiment: metadata, Timeout: *timeout,
+				})
+			} else if *driver == "reference" {
+				result, err = codingeval.Run(context.Background(), task, codingeval.RunOptions{
+					LedgerPath: *ledger, ArtifactDir: runArtifactDir, Experiment: metadata,
+				})
+			} else {
+				return fmt.Errorf("driver must be reference or agent")
+			}
+			fmt.Printf("%-32s iteration=%-3d %s\n", task.ID, iteration, result.Status)
+			if err != nil || result.Status != "passed" {
+				failed++
+			}
 		}
 	}
 	if failed > 0 {
@@ -237,6 +265,32 @@ func summary(args []string) error {
 		fmt.Println(string(data))
 	}
 	return err
+}
+
+func compare(args []string) error {
+	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
+	ledger := flags.String("ledger", filepath.Join(".coding-eval", "ledger.jsonl"), "JSONL ledger path")
+	experiment := flags.String("experiment", "", "experiment id")
+	baseline := flags.String("baseline", "baseline", "baseline variant")
+	candidate := flags.String("candidate", "candidate", "candidate variant")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	value, err := codingeval.CompareLedger(*ledger, *experiment, *baseline, *candidate)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err == nil {
+		fmt.Println(string(data))
+	}
+	if err != nil {
+		return err
+	}
+	if value.Pairs == 0 {
+		return fmt.Errorf("no paired observations found")
+	}
+	return nil
 }
 
 func loadCatalog(path string) (codingeval.Catalog, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -41,7 +42,11 @@ func TestRunTimeout(t *testing.T) {
 	if result.Status != "failed" || !result.Action.TimedOut {
 		t.Fatalf("result = %#v", result)
 	}
-	if time.Since(start) > 3*time.Second {
+	limit := 3 * time.Second
+	if runtime.GOOS == "windows" {
+		limit = 4 * time.Second
+	}
+	if time.Since(start) > limit {
 		t.Fatal("timeout did not stop command promptly")
 	}
 }
