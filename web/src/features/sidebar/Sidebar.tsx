@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 import { useConversationStore } from "@/stores/conversations";
 import { useProjectStore } from "@/stores/projects";
+import { useThemeStore, type Theme } from "@/stores/theme";
 import { MemoryEditor, MemoryIcon } from "@/features/memory/MemoryEditor";
 import { ProjectGroup } from "./ProjectGroup";
 
@@ -14,6 +15,8 @@ export function Sidebar() {
   const refreshConv = useConversationStore((s) => s.refresh);
   const projects = useProjectStore((s) => s.items);
   const refreshProjects = useProjectStore((s) => s.refresh);
+  const theme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
 
   useEffect(() => {
     refreshConv();
@@ -33,6 +36,15 @@ export function Sidebar() {
   }, [conversations]);
 
   const onNew = () => navigate("/");
+
+  const cycleTheme = () => {
+    const next: Record<Theme, Theme> = {
+      light: "dark",
+      dark: "system",
+      system: "light",
+    };
+    setTheme(next[theme]);
+  };
 
   return (
     <aside className="relative w-[280px] shrink-0 flex flex-col overflow-hidden rounded-[26px] bg-paper/92 shadow-[0_0_0_1px_var(--color-rule),0_18px_60px_oklch(0_0_0/0.08)] backdrop-blur transition-[width] duration-200 ease-out data-[collapsed=true]:w-16" data-collapsed={collapsed}>
@@ -107,6 +119,21 @@ export function Sidebar() {
       )}
 
       <footer className="shrink-0 border-t border-rule/60 p-2">
+        <button
+          type="button"
+          onClick={cycleTheme}
+          title={themeTitle(theme)}
+          aria-label="切换主题"
+          className={[
+            "flex h-10 w-full items-center rounded-xl text-[14px] text-muted transition-colors hover:bg-rule/70 hover:text-ink",
+            collapsed ? "justify-center" : "gap-3 px-3",
+          ].join(" ")}
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <ThemeIcon theme={theme} />
+          </span>
+          {!collapsed && <span className="truncate">{themeLabel(theme)}</span>}
+        </button>
         {/* 记忆是个弹窗而不是路由：它只有一个文件，开一个设置页给一块 textarea
             不划算，而且从对话里打开项目记忆走的也是同一个弹窗。 */}
         <button
@@ -175,6 +202,83 @@ export function Sidebar() {
 
       <MemoryEditor open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </aside>
+  );
+}
+
+function themeLabel(theme: Theme): string {
+  if (theme === "light") return "浅色模式";
+  if (theme === "dark") return "深色模式";
+  return "跟随系统";
+}
+
+function themeTitle(theme: Theme): string {
+  if (theme === "light") return "主题：浅色（点击切换到深色）";
+  if (theme === "dark") return "主题：深色（点击切换到跟随系统）";
+  return "主题：跟随系统（点击切换到浅色）";
+}
+
+function ThemeIcon({ theme }: { theme: Theme }) {
+  if (theme === "light") return <SunIcon />;
+  if (theme === "dark") return <MoonIcon />;
+  return <MonitorIcon />;
+}
+
+function SunIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </svg>
+  );
+}
+
+function MonitorIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className="shrink-0"
+    >
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
   );
 }
 

@@ -78,7 +78,7 @@ export function ContextPicker({
             添加上下文 · @{query}
           </span>
           {truncated && (
-            <span className="shrink-0 text-[10px] text-amber-600">
+            <span className="shrink-0 text-[10px] text-amber-600 dark:text-amber-400">
               结果已截断
             </span>
           )}
@@ -90,7 +90,7 @@ export function ContextPicker({
             </div>
           )}
           {!loading && error && (
-            <div className="px-3 py-6 text-center text-sm text-red-600">
+            <div className="px-3 py-6 text-center text-sm text-red-600 dark:text-red-400">
               加载失败：{error}
             </div>
           )}

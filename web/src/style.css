@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans:
     "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
@@ -14,6 +16,26 @@
   --color-rule: oklch(0.88 0.005 250);
   --color-accent: oklch(0.36 0.10 245);
   --color-accent-hover: oklch(0.30 0.10 245);
+}
+
+/* Dark theme: the same seven tokens are overridden under `.dark`, so every
+ * `bg-paper` / `text-ink` / `border-rule` utility inherits the dark value
+ * without touching individual components. */
+.dark {
+  --color-paper: oklch(0.18 0.012 250);
+  --color-ink: oklch(0.93 0.005 250);
+  --color-muted: oklch(0.68 0.012 250);
+  --color-subtle: oklch(0.25 0.012 250);
+  --color-rule: oklch(0.30 0.012 250);
+  --color-accent: oklch(0.72 0.10 245);
+  --color-accent-hover: oklch(0.80 0.10 245);
+}
+
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
 }
 
 @layer base {

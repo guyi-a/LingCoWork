@@ -89,7 +89,7 @@ export function Instructions() {
 
       <div className="min-h-0 px-8 pb-12">
         {error && (
-          <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700">
+          <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
             {error}
           </p>
         )}
@@ -129,13 +129,13 @@ export function Instructions() {
                 <div className="mt-4 flex items-center justify-end gap-2 border-t border-rule/60 pt-3">
                   {deleting === item.name ? (
                     <>
-                      <span className="mr-auto text-[11px] text-red-700">
+                      <span className="mr-auto text-[11px] text-red-700 dark:text-red-400">
                         删除后无法恢复
                       </span>
                       <button
                         type="button"
                         onClick={() => void remove(item.name)}
-                        className="text-[12px] font-medium text-red-700 hover:text-red-800"
+                        className="text-[12px] font-medium text-red-700 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
                       >
                         确认删除
                       </button>
@@ -152,7 +152,7 @@ export function Instructions() {
                       <button
                         type="button"
                         onClick={() => setDeleting(item.name)}
-                        className="text-[12px] text-muted hover:text-red-700"
+                        className="text-[12px] text-muted hover:text-red-700 dark:hover:text-red-400"
                       >
                         删除
                       </button>
@@ -307,7 +307,7 @@ function InstructionEditor({
             />
           </label>
           {error && (
-            <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700">
+            <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
               {error}
             </p>
           )}

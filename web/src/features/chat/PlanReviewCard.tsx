@@ -289,7 +289,7 @@ export function PlanReviewCard({
                         ),
                       })
                     }
-                    className="px-1 text-muted opacity-0 transition-opacity hover:text-red-600 group-hover:opacity-100"
+                    className="px-1 text-muted opacity-0 transition-opacity hover:text-red-600 group-hover:opacity-100 dark:hover:text-red-400"
                     aria-label="删除任务"
                   >
                     ×
@@ -307,7 +307,7 @@ export function PlanReviewCard({
           </div>
         </div>
 
-        {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-rule/70 bg-subtle/20 px-5 py-3">

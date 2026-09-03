@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { highlightCode, resolveLanguage } from "@/lib/shiki";
+import { useThemeStore } from "@/stores/theme";
 
 export function CodePreview({
   content,
@@ -12,12 +13,13 @@ export function CodePreview({
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const dark = useThemeStore((s) => s.effective === "dark");
 
   useEffect(() => {
     let cancelled = false;
     setHtml(null);
     const lang = resolveLanguage(fileName);
-    highlightCode(content, lang, { showLineNumbers: true })
+    highlightCode(content, lang, { showLineNumbers: true, dark })
       .then((h) => {
         if (!cancelled) setHtml(h);
       })
@@ -27,7 +29,7 @@ export function CodePreview({
     return () => {
       cancelled = true;
     };
-  }, [content, fileName]);
+  }, [content, fileName, dark]);
 
   useEffect(() => {
     if (!html || !highlightLine || !hostRef.current) return;

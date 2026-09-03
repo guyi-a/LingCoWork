@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LingCoWork</title>
+    <script>
+      // Apply the persisted theme class before CSS/paint to avoid a flash of
+      // the wrong background on startup. Mirrors stores/theme.ts.
+      (function () {
+        try {
+          var theme = localStorage.getItem("lingcowork.theme");
+          var dark =
+            theme === "dark" ||
+            ((theme === "system" || !theme) &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

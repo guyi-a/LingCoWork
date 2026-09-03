@@ -6,7 +6,8 @@ import {
   type ShikiTransformer,
 } from "shiki";
 
-const THEME: BundledTheme = "github-light";
+const THEME_LIGHT: BundledTheme = "github-light";
+const THEME_DARK: BundledTheme = "github-dark";
 const FALLBACK_LANG: BundledLanguage = "bash";
 
 const LANG_BY_EXT: Record<string, BundledLanguage> = {
@@ -73,7 +74,10 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 
 async function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({ themes: [THEME], langs: [] });
+    highlighterPromise = createHighlighter({
+      themes: [THEME_LIGHT, THEME_DARK],
+      langs: [],
+    });
   }
   return highlighterPromise;
 }
@@ -81,7 +85,7 @@ async function getHighlighter(): Promise<Highlighter> {
 export async function highlightCode(
   code: string,
   lang: BundledLanguage,
-  options?: { showLineNumbers?: boolean },
+  options?: { showLineNumbers?: boolean; dark?: boolean },
 ): Promise<string> {
   const hl = await getHighlighter();
   if (!hl.getLoadedLanguages().includes(lang)) {
@@ -99,7 +103,7 @@ export async function highlightCode(
     : [];
   const html = hl.codeToHtml(code, {
     lang: actualLang,
-    theme: THEME,
+    theme: options?.dark ? THEME_DARK : THEME_LIGHT,
     transformers,
   });
   // Shiki emits literal `\n` between .line spans; combined with our

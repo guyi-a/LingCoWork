@@ -178,7 +178,7 @@ export function FilePreview({
           <div className="p-4 font-mono text-[11px] text-muted">Loading…</div>
         )}
         {!inlineKind && error && (
-          <div className="p-4 text-[13px] text-red-600">加载失败：{error}</div>
+          <div className="p-4 text-[13px] text-red-600 dark:text-red-400">加载失败：{error}</div>
         )}
         {!inlineKind && !loading && !error && file && (
           <>

@@ -126,8 +126,8 @@ export function CodingToolLabel({ tool }: { tool: ToolCall }) {
         <>
           <span className="text-ink/70">{basename(path)}</span>
           <span>·</span>
-          <span className="text-emerald-600">+{additions}</span>
-          <span className="text-red-600">−{deletions}</span>
+          <span className="text-emerald-600 dark:text-emerald-400">+{additions}</span>
+          <span className="text-red-600 dark:text-red-400">−{deletions}</span>
         </>
       );
     }
@@ -197,7 +197,9 @@ function CommandDetails({
             <span
               className={cn(
                 "font-medium",
-                validation.passed ? "text-emerald-600" : "text-red-600",
+                validation.passed
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-red-600 dark:text-red-400",
               )}
             >
               {validation.kind} {validation.passed ? "passed" : "failed"}
@@ -247,7 +249,7 @@ function CommandDetails({
             </div>
           )}
           {!validation.parse_ok && (
-            <p className="text-[10px] text-amber-700">
+            <p className="text-[10px] text-amber-700 dark:text-amber-400">
               未能结构化解析完整输出，以下为原始日志。
             </p>
           )}
@@ -399,8 +401,8 @@ function PatchDetails({
                   key={`${index}:${line.text}`}
                   className={cn(
                     "flex min-w-max",
-                    line.kind === "add" && "bg-emerald-500/10 text-emerald-700",
-                    line.kind === "delete" && "bg-red-500/10 text-red-700",
+                    line.kind === "add" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                    line.kind === "delete" && "bg-red-500/10 text-red-700 dark:text-red-300",
                     line.kind === "hunk" && "text-accent",
                     (line.kind === "context" || line.kind === "meta") &&
                       "text-ink/70",
@@ -415,7 +417,7 @@ function PatchDetails({
             </code>
           </pre>
           {patchTruncated && (
-            <div className="border-t border-rule/60 px-2 py-1 text-[10px] text-amber-700">
+            <div className="border-t border-rule/60 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-400">
               Patch preview truncated at 120 lines
             </div>
           )}
@@ -542,7 +544,7 @@ function ResultMeta({
   if (truncated) parts.push(reason || "truncated");
   if (parts.length === 0) return null;
   return (
-    <p className={cn("text-[10px]", truncated ? "text-amber-700" : "text-muted")}>
+    <p className={cn("text-[10px]", truncated ? "text-amber-700 dark:text-amber-400" : "text-muted")}>
       {parts.join(" · ")}
     </p>
   );

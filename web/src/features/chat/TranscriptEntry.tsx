@@ -375,7 +375,7 @@ export function TranscriptEntry({
       )}
 
       {turn.error && (
-        <p className="mt-2 text-sm text-red-700">⚠ {turn.error}</p>
+        <p className="mt-2 text-sm text-red-700 dark:text-red-400">⚠ {turn.error}</p>
       )}
     </article>
   );
@@ -745,7 +745,7 @@ function SubAgentTimeline({
             </div>
           )}
           {block.errors.map((err, i) => (
-            <div key={i} className="text-[13px] leading-relaxed whitespace-pre-wrap text-red-700">
+            <div key={i} className="text-[13px] leading-relaxed whitespace-pre-wrap text-red-700 dark:text-red-400">
               {err}
             </div>
           ))}
@@ -855,10 +855,10 @@ function ToolEntry({
           )}
           {tool.error && (
             <div>
-              <div className="text-[9px] tracking-[0.2em] uppercase text-red-700 mb-1">
+              <div className="text-[9px] tracking-[0.2em] uppercase text-red-700 mb-1 dark:text-red-400">
                 Error
               </div>
-              <pre className="text-[11px] text-red-700 whitespace-pre-wrap break-all">
+              <pre className="text-[11px] text-red-700 whitespace-pre-wrap break-all dark:text-red-400">
                 {tool.error}
               </pre>
             </div>
@@ -878,7 +878,7 @@ function statusBits(status: ToolCall["status"]): {
     return {
       dot: <span className="inline-block size-1.5 rounded-full bg-amber-500" />,
       label: "pending",
-      labelClass: "text-amber-700 font-medium",
+      labelClass: "text-amber-700 font-medium dark:text-amber-400",
     };
   }
   if (status === "running") {
@@ -895,7 +895,7 @@ function statusBits(status: ToolCall["status"]): {
       dot: (
         <span
           aria-hidden
-          className="inline-flex items-center justify-center size-3 text-emerald-600 leading-none"
+          className="inline-flex items-center justify-center size-3 text-emerald-600 leading-none dark:text-emerald-400"
         >
           <svg
             width="10"
@@ -912,7 +912,7 @@ function statusBits(status: ToolCall["status"]): {
         </span>
       ),
       label: "done",
-      labelClass: "text-emerald-600 font-medium",
+      labelClass: "text-emerald-600 font-medium dark:text-emerald-400",
     };
   }
   if (status === "cancelled") {
@@ -926,7 +926,7 @@ function statusBits(status: ToolCall["status"]): {
     dot: (
       <span
         aria-hidden
-        className="inline-flex items-center justify-center size-3 text-red-600 leading-none"
+        className="inline-flex items-center justify-center size-3 text-red-600 leading-none dark:text-red-400"
       >
         <svg
           width="10"
@@ -943,7 +943,7 @@ function statusBits(status: ToolCall["status"]): {
       </span>
     ),
     label: "failed",
-    labelClass: "text-red-600 font-medium",
+    labelClass: "text-red-600 font-medium dark:text-red-400",
   };
 }
 

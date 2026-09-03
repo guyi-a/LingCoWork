@@ -100,7 +100,7 @@ export function WorkspaceProblems({
                   ))}
                 </div>
                 {!run.validation.parse_ok && (
-                  <p className="px-3 py-2 text-[10px] text-amber-700">
+                  <p className="px-3 py-2 text-[10px] text-amber-700 dark:text-amber-400">
                     未能结构化解析完整输出，请展开命令卡查看原始日志。
                   </p>
                 )}
@@ -191,8 +191,8 @@ function Empty({
     <div
       className={cn(
         "flex h-32 items-center justify-center text-xs text-muted",
-        tone === "error" && "text-red-600",
-        tone === "success" && "text-emerald-600",
+        tone === "error" && "text-red-600 dark:text-red-400",
+        tone === "success" && "text-emerald-600 dark:text-emerald-400",
       )}
     >
       {children}

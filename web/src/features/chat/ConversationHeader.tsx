@@ -96,7 +96,7 @@ export function ConversationHeader({
             )}
             {repoStatus?.git_repository && repoStatus.dirty && (
               <span
-                className="shrink-0 text-amber-600"
+                className="shrink-0 text-amber-600 dark:text-amber-400"
                 title={`暂存 ${repoStatus.staged} · 未暂存 ${repoStatus.unstaged} · 未跟踪 ${repoStatus.untracked}`}
               >
                 ● {repoStatus.changed_files}
@@ -124,7 +124,7 @@ export function ConversationHeader({
             setPanelOpen(true);
             setActiveTab("problems");
           }}
-          className="no-drag shrink-0 rounded px-2 py-1 font-mono text-[10px] text-red-600 hover:bg-red-50"
+          className="no-drag shrink-0 rounded px-2 py-1 font-mono text-[10px] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
           title="查看 Problems"
         >
           {problemCount} errors

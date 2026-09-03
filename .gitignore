@@ -9,6 +9,10 @@ Thumbs.db
 .codeflicker/
 .claude/
 .myflicker/
+
+# pi coding agent local workspace (memory, plans)
+.pi/
+
 *.swp
 *.swo
 *~

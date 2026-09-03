@@ -8,6 +8,9 @@ import { Conversation } from "@/routes/conversation";
 import { Connectors } from "@/routes/connectors";
 import { SkillHub } from "@/routes/skillhub";
 import { Instructions } from "@/routes/instructions";
+import { initTheme } from "@/stores/theme";
+
+initTheme();
 
 const router = createBrowserRouter([
   {

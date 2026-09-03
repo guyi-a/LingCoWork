@@ -173,7 +173,7 @@ export function SkillHub() {
         )}
 
         {error && (
-          <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700">
+          <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
             {error}
           </p>
         )}
@@ -314,9 +314,9 @@ function Badge({
       className={cn(
         "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]",
         tone === "emerald"
-          ? "bg-emerald-50 text-emerald-700"
+          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
           : tone === "amber"
-            ? "bg-amber-50 text-amber-700"
+            ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
             : "bg-subtle text-muted",
       )}
     >
@@ -412,7 +412,7 @@ function SkillDetail({
                 onClick={onUninstall}
                 className={cn(
                   "inline-flex h-8 items-center rounded-lg border border-rule bg-paper px-4 text-sm font-medium text-ink",
-                  "transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700",
+                  "transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-400",
                   busy && "pointer-events-none opacity-40",
                 )}
               >
@@ -447,12 +447,12 @@ function SkillDetail({
 
       <div className="min-h-0 space-y-6 px-8 pb-12">
         {notice && (
-          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">
+          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
             {notice}
           </p>
         )}
         {error && (
-          <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700">
+          <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
             {error}
           </p>
         )}

@@ -111,8 +111,8 @@ export function UnifiedDiffView({
             <span
               className={cn(
                 "select-none py-0.5 text-center",
-                line.kind === "add" && "text-emerald-700",
-                line.kind === "delete" && "text-red-700",
+                line.kind === "add" && "text-emerald-700 dark:text-emerald-300",
+                line.kind === "delete" && "text-red-700 dark:text-red-300",
               )}
             >
               {line.kind === "add" ? "+" : line.kind === "delete" ? "−" : ""}
@@ -120,8 +120,8 @@ export function UnifiedDiffView({
             <span
               className={cn(
                 "whitespace-pre py-0.5 pr-4",
-                line.kind === "add" && "text-emerald-800",
-                line.kind === "delete" && "text-red-800",
+                line.kind === "add" && "text-emerald-800 dark:text-emerald-300",
+                line.kind === "delete" && "text-red-800 dark:text-red-300",
               )}
             >
               {line.text || " "}
@@ -130,7 +130,7 @@ export function UnifiedDiffView({
         ))}
       </div>
       {clipped && (
-        <div className="sticky bottom-0 border-t border-rule bg-paper px-3 py-1.5 text-[10px] text-amber-700">
+        <div className="sticky bottom-0 border-t border-rule bg-paper px-3 py-1.5 text-[10px] text-amber-700 dark:text-amber-400">
           Diff 内容过长，仅显示前 {MAX_RENDERED_LINES} 行
         </div>
       )}

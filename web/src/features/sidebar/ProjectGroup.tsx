@@ -314,7 +314,7 @@ function CloseProjectDialog({
             type="button"
             onClick={submit}
             disabled={pending}
-            className="px-3 py-1.5 text-[13px] bg-red-600 text-paper hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="px-3 py-1.5 text-[13px] bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {pending ? "关闭中…" : "确认关闭"}
           </button>

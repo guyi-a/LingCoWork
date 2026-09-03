@@ -41,7 +41,7 @@ export function DropdownMenuItem({
         "flex items-center gap-2 px-3 py-1.5 text-[13px] cursor-pointer outline-none select-none",
         "data-[highlighted]:bg-subtle/80 data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed",
         destructive
-          ? "text-red-700 data-[highlighted]:bg-red-50"
+          ? "text-red-700 data-[highlighted]:bg-red-50 dark:text-red-400 dark:data-[highlighted]:bg-red-950/40"
           : "text-ink",
         className,
       )}

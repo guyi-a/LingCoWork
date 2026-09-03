@@ -315,7 +315,7 @@ export function ApprovalBar({
               {toolTitle(current.tool, effect)}
             </span>
             {effect?.destructive && (
-              <span className="rounded bg-red-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-red-700">
+              <span className="rounded bg-red-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-red-700 dark:bg-red-950/40 dark:text-red-400">
                 不可撤销
               </span>
             )}
@@ -328,7 +328,7 @@ export function ApprovalBar({
                 of what it does is that machine's own. Saying so is the point
                 of the card — without it the user is approving a name. */}
             {effect?.kind === "mcp-call" && !effect.trust_annotations && (
-              <span className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700">
+              <span className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
                 未信任的服务器
               </span>
             )}

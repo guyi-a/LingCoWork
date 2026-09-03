@@ -49,8 +49,8 @@ export function ToolActivityGroup({
         {activity.kind === "changes" &&
           (activity.additions > 0 || activity.deletions > 0) && (
             <span className="flex shrink-0 items-center gap-1.5 tabular-nums">
-              <span className="text-emerald-600">+{activity.additions}</span>
-              <span className="text-red-600">−{activity.deletions}</span>
+              <span className="text-emerald-600 dark:text-emerald-400">+{activity.additions}</span>
+              <span className="text-red-600 dark:text-red-400">−{activity.deletions}</span>
             </span>
           )}
         <span
@@ -109,14 +109,14 @@ function activityStatus(status: ToolCall["status"]): {
   if (status === "pending") {
     return {
       label: "pending",
-      className: "text-amber-700",
+      className: "text-amber-700 dark:text-amber-400",
       dot: <span className="size-1.5 rounded-full bg-amber-500" />,
     };
   }
   if (status === "error") {
     return {
       label: "failed",
-      className: "text-red-700",
+      className: "text-red-700 dark:text-red-400",
       dot: <span className="text-red-600">×</span>,
     };
   }
@@ -129,7 +129,7 @@ function activityStatus(status: ToolCall["status"]): {
   }
   return {
     label: "done",
-    className: "text-emerald-700",
+    className: "text-emerald-700 dark:text-emerald-400",
     dot: <span className="text-emerald-600">✓</span>,
   };
 }

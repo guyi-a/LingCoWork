@@ -223,7 +223,7 @@ function WorkspaceTabs({
         >
           {tab.label}
           {tab.id === "problems" && problemCount > 0 && (
-            <span className="ml-1 rounded-full bg-red-100 px-1 text-[9px] text-red-700">
+            <span className="ml-1 rounded-full bg-red-100 px-1 text-[9px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
               {problemCount > 99 ? "99+" : problemCount}
             </span>
           )}

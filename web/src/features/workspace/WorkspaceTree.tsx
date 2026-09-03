@@ -94,7 +94,7 @@ export function WorkspaceTree({
       );
     }
     return (
-      <div className="p-4 text-[13px] text-red-600">加载失败：{error}</div>
+      <div className="p-4 text-[13px] text-red-600 dark:text-red-400">加载失败：{error}</div>
     );
   }
   return (

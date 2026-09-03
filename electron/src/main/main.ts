@@ -20,7 +20,7 @@
  * The renderer talks directly to the local Go backend on 127.0.0.1:9001.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron';
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -241,6 +241,13 @@ function createWindow(): void {
     frame: false,
     show: false,
     icon: iconPath,
+    // Match the renderer's --color-paper token so the window doesn't flash
+    // the wrong background before the first paint. Follows the system theme
+    // (the app's default is "system"); a manual override applied later only
+    // affects the renderer until the next relaunch.
+    backgroundColor: nativeTheme.shouldUseDarkColors
+      ? 'oklch(0.18 0.012 250)'
+      : 'oklch(0.985 0 0)',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

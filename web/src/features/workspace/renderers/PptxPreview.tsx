@@ -92,7 +92,7 @@ export function PptxPreview({
   if (error) {
     return (
       <div className="p-6 flex flex-col items-center justify-center gap-3 text-center">
-        <div className="text-[13px] text-red-600">pptx 预览失败：{error}</div>
+        <div className="text-[13px] text-red-600 dark:text-red-400">pptx 预览失败：{error}</div>
         <a
           href={workspaceDownloadURL(conversationId, path, { projectId })}
           download={name}

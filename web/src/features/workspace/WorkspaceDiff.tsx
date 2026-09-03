@@ -115,13 +115,13 @@ export function WorkspaceDiffPanel({
           全部 Git
         </ScopeButton>
         <span className="ml-auto flex items-center gap-2 font-mono text-[10px]">
-          <span className="text-emerald-600">+{totals.additions}</span>
-          <span className="text-red-600">−{totals.deletions}</span>
+          <span className="text-emerald-600 dark:text-emerald-400">+{totals.additions}</span>
+          <span className="text-red-600 dark:text-red-400">−{totals.deletions}</span>
         </span>
       </div>
 
       {error && (
-        <div className="shrink-0 border-b border-rule px-3 py-2 text-[11px] text-red-700">
+        <div className="shrink-0 border-b border-rule px-3 py-2 text-[11px] text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
@@ -187,7 +187,7 @@ export function WorkspaceDiffPanel({
         </>
       )}
       {changes?.truncated && (
-        <div className="shrink-0 border-t border-rule px-3 py-1.5 text-[10px] text-amber-700">
+        <div className="shrink-0 border-t border-rule px-3 py-1.5 text-[10px] text-amber-700 dark:text-amber-400">
           变更文件过多，列表已截断
         </div>
       )}
@@ -219,10 +219,10 @@ function ChangeRow({
       </span>
       <span className="flex shrink-0 gap-1.5 font-mono text-[10px]">
         {file.additions > 0 && (
-          <span className="text-emerald-600">+{file.additions}</span>
+          <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>
         )}
         {file.deletions > 0 && (
-          <span className="text-red-600">−{file.deletions}</span>
+          <span className="text-red-600 dark:text-red-400">−{file.deletions}</span>
         )}
       </span>
     </button>
@@ -272,10 +272,10 @@ function StatusBadge({
       className={cn(
         "inline-flex shrink-0 items-center justify-center rounded font-mono font-semibold",
         compact ? "size-4 text-[9px]" : "h-5 min-w-5 px-1 text-[9px]",
-        status === "added" && "bg-emerald-500/10 text-emerald-700",
-        status === "deleted" && "bg-red-500/10 text-red-700",
-        status === "renamed" && "bg-blue-500/10 text-blue-700",
-        status === "modified" && "bg-amber-500/10 text-amber-700",
+        status === "added" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        status === "deleted" && "bg-red-500/10 text-red-700 dark:text-red-300",
+        status === "renamed" && "bg-blue-500/10 text-blue-700 dark:text-blue-300",
+        status === "modified" && "bg-amber-500/10 text-amber-700 dark:text-amber-300",
       )}
     >
       {label}

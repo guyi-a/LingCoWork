@@ -153,7 +153,7 @@ export function DocxPreview({
   if (error) {
     return (
       <div className="p-6 flex flex-col items-center justify-center gap-3 text-center">
-        <div className="text-[13px] text-red-600">docx 预览失败：{error}</div>
+        <div className="text-[13px] text-red-600 dark:text-red-400">docx 预览失败：{error}</div>
         <a
           href={workspaceDownloadURL(conversationId, path, { projectId })}
           download={name}

@@ -77,7 +77,7 @@ export function FileSwitcherOverlay({
           <div className="p-2 font-mono text-[11px] text-muted">Loading…</div>
         )}
         {error && (
-          <div className="p-2 text-[12px] text-red-600">加载失败：{error}</div>
+          <div className="p-2 text-[12px] text-red-600 dark:text-red-400">加载失败：{error}</div>
         )}
         {!loading && !error && entries?.length === 0 && (
           <div className="p-2 text-[12px] text-muted">空工作区</div>

@@ -125,15 +125,15 @@ export function MemoryEditor({
                 className={cn(
                   "block w-full resize-y rounded-lg border bg-paper px-4 py-3 font-mono text-[12px] leading-5 text-ink outline-none",
                   overflow
-                    ? "border-red-400 focus:ring-2 focus:ring-red-100"
+                    ? "border-red-400 focus:ring-2 focus:ring-red-100 dark:border-red-800 dark:focus:ring-red-900"
                     : "border-rule focus:border-accent focus:ring-2 focus:ring-accent/10",
                 )}
               />
               <div className="flex items-center justify-between text-[12px]">
-                <span className={cn("font-mono", overflow ? "text-red-700" : "text-muted")}>
+                <span className={cn("font-mono", overflow ? "text-red-700 dark:text-red-400" : "text-muted")}>
                   {bytes} / {limit} 字节
                 </span>
-                <span className={overflow ? "text-red-700" : "text-muted"}>
+                <span className={overflow ? "text-red-700 dark:text-red-400" : "text-muted"}>
                   {overflow
                     ? "超出上限，先合并或删掉几条再保存"
                     : "一行一条，按日期分组"}
@@ -143,13 +143,13 @@ export function MemoryEditor({
           ) : null}
 
           {error && (
-            <div className="space-y-2 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700">
+            <div className="space-y-2 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
               <p className="font-mono">{error}</p>
               {conflict && (
                 <button
                   type="button"
                   onClick={() => void load()}
-                  className="inline-flex h-7 items-center rounded-md border border-red-300 bg-paper px-3 text-red-700 hover:bg-red-100"
+                  className="inline-flex h-7 items-center rounded-md border border-red-300 bg-paper px-3 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/40"
                 >
                   丢弃我的修改并重新加载
                 </button>

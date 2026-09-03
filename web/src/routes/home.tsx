@@ -129,7 +129,7 @@ export function Home() {
                 <>
                   <AttachmentChips conversationID={draftId} />
                   {workspaceError && (
-                    <p className="px-5 pt-3 text-xs text-red-600">
+                    <p className="px-5 pt-3 text-xs text-red-600 dark:text-red-400">
                       {workspaceError}
                     </p>
                   )}

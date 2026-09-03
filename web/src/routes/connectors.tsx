@@ -218,15 +218,15 @@ export function Connectors() {
           )}
 
           {issues.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3">
-              <p className="text-[13px] font-medium text-amber-800">
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 dark:border-amber-900 dark:bg-amber-950/40">
+              <p className="text-[13px] font-medium text-amber-800 dark:text-amber-300">
                 有 {issues.length} 条配置被跳过
               </p>
               <ul className="mt-1.5 space-y-1">
                 {issues.map((i) => (
                   <li
                     key={i.server}
-                    className="font-mono text-[12px] text-amber-700"
+                    className="font-mono text-[12px] text-amber-700 dark:text-amber-400"
                   >
                     {i.server}: {i.message}
                   </li>
@@ -261,7 +261,7 @@ export function Connectors() {
           />
 
           {error && (
-            <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700">
+            <p className="rounded-lg bg-red-50 px-3 py-2 font-mono text-[12px] text-red-700 dark:bg-red-950/40 dark:text-red-400">
               {error}
             </p>
           )}
@@ -389,7 +389,7 @@ function ServerRow({
                   setConfirming(false);
                   onDelete();
                 }}
-                className="inline-flex h-7 items-center rounded-lg bg-red-600 px-3 text-[12px] font-medium text-paper transition-opacity hover:opacity-90"
+                className="inline-flex h-7 items-center rounded-lg bg-red-600 px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
               >
                 确认删除
               </button>
@@ -408,7 +408,7 @@ function ServerRow({
               title="从配置里删除这个服务器，并清除它的授权"
               className={cn(
                 "inline-flex h-7 items-center rounded-lg border border-rule bg-paper px-3 text-[12px] font-medium text-ink",
-                "transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700",
+                "transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-400",
               )}
             >
               删除
@@ -442,7 +442,7 @@ function ServerRow({
       )}
 
       {server.error && (
-        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 font-mono text-[11px] leading-4 text-red-700">
+        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 font-mono text-[11px] leading-4 text-red-700 dark:bg-red-950/40 dark:text-red-400">
           {server.error}
         </p>
       )}
@@ -456,7 +456,7 @@ function ServerRow({
         <p
           className={cn(
             "mt-2 rounded-lg px-3 py-2 font-mono text-[11px] leading-4",
-            test.ok ? "bg-subtle/60 text-muted" : "bg-red-50 text-red-700",
+            test.ok ? "bg-subtle/60 text-muted" : "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400",
           )}
         >
           {test.ok ? `连接成功 · ${test.tool_count} 个工具` : test.error}
